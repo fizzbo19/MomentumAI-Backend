@@ -12,6 +12,14 @@ from flask_cors import CORS
 # --- Flask App Setup ---
 app = Flask(__name__, static_folder="public")
 
+app = Flask(__name__, static_folder="public")
+
+CORS(app, resources={r"/*": {"origins": [
+    "https://momentumai-frontend.onrender.com",
+    "http://localhost:5000",  # local testing
+    "http://127.0.0.1:5000"
+]}}, supports_credentials=True)
+
 # Enable CORS for your frontend only (replace with your frontend URL)
 frontend_url = os.environ.get("FRONTEND_URL", "https://momentumai-frontend.onrender.com")
 CORS(app, resources={r"/api/*": {"origins": frontend_url}})
