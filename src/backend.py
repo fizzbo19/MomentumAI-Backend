@@ -11,7 +11,13 @@ from flask_cors import CORS
 
 # --- Flask App Setup ---
 app = Flask(__name__)
-CORS(app)
+
+# Allow CORS for your deployed frontend + localhost
+CORS(app, resources={r"/*": {"origins": [
+    "https://momentumai-frontendv11.onrender.com",
+    "https://momentumai-frontend.onrender.com",
+    "http://localhost:3000"
+]}})
 
 # --- Environment Variables ---
 GOOGLE_SCRIPT_URL = os.environ.get(
