@@ -1,5 +1,5 @@
 """
-MomentumAI Backend – Render-ready version
+MomentumAI Backend – Render-ready version with proper CORS
 """
 import os
 import math
@@ -11,7 +11,10 @@ from flask_cors import CORS
 
 # --- Flask App Setup ---
 app = Flask(__name__, static_folder="public")
-CORS(app, resources={r"/*": {"origins": "*"}})  # allow all for simplicity; can restrict later
+
+# Enable CORS for your frontend only (replace with your frontend URL)
+frontend_url = os.environ.get("FRONTEND_URL", "https://momentumai-frontend.onrender.com")
+CORS(app, resources={r"/api/*": {"origins": frontend_url}})
 
 # --- Environment Variables ---
 GOOGLE_SCRIPT_URL = os.environ.get(
@@ -56,10 +59,12 @@ def sanitize_player_data(players_list):
 # --- Routes ---
 @app.route("/api/submit_demo", methods=["POST", "OPTIONS"])
 def submit_demo():
-    if request.method == "OPTIONS": return "", 200
+    if request.method == "OPTIONS":
+        return "", 200
     try:
         data = request.json
-        if not data: return jsonify({"success": False, "message": "No form data provided."}), 400
+        if not data:
+            return jsonify({"success": False, "message": "No form data provided."}), 400
         response = requests.post(GOOGLE_SCRIPT_URL, json=data)
         response.raise_for_status()
         return jsonify({"success": True, "message": "Form submitted successfully."}), 200
@@ -67,9 +72,25 @@ def submit_demo():
         print(f"Error forwarding to Google Apps Script: {e}")
         return jsonify({"success": False, "message": "Error submitting form."}), 500
 
+@app.route("/api/search_player", methods=["POST", "OPTIONS"])
+def search_player():
+    if request.method == "OPTIONS":
+        return "", 200
+    try:
+        req_data = request.json
+        player_name = req_data.get("player_name", "").lower()
+        if not player_name:
+            return jsonify([])
+
+        filtered_players = player_data[player_data['short_name'].str.lower().str.contains(player_name)]
+        result = sanitize_player_data(filtered_players.to_dict(orient='records'))
+        return jsonify(result)
+    except Exception as e:
+        print("Error in search_player:", e)
+        return jsonify([]), 500
+
 @app.route("/assets/<path:filename>")
 def serve_assets(filename):
-    # Serve video, images, etc.
     return send_from_directory(os.path.join(app.root_path, "public/assets"), filename)
 
 # --- Main Execution ---
