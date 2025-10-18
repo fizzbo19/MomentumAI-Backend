@@ -13,27 +13,44 @@ import numpy as np
 import pandas as pd
 from flask import Flask, request, jsonify, send_from_directory
 import requests
+# --- Flask App Setup ---
+from flask import Flask, request, make_response
 from flask_cors import CORS
 
-# --- Flask App Setup ---
 app = Flask(__name__, static_folder="public")
 
-# Frontend origin for CORS - configure in Render env
+# Frontend origin for CORS - configure in Render env (safe default provided)
 DEFAULT_FRONTEND = "https://momentumai-frontend.onrender.com"
 FRONTEND_URL = os.environ.get("FRONTEND_URL", DEFAULT_FRONTEND)
 
-# Allow CORS only from frontend (and localhost for testing)
-CORS(app, resources={
-    r"/api/*": {
-        "origins": [
-            FRONTEND_URL,
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-            "http://localhost:5000",
-            "http://127.0.0.1:5000"
-        ]
-    }
-}, supports_credentials=True)
+# Allowed origins list (frontend + common local dev hosts)
+ALLOWED_ORIGINS = [
+    FRONTEND_URL,
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5000",
+    "http://127.0.0.1:5000"
+]
+
+# Enable CORS on all /api/* routes for allowed origins
+CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS}}, supports_credentials=True)
+
+# Extra safety: set Access-Control headers dynamically for preflight & responses
+@app.after_request
+def add_cors_headers(response):
+    origin = request.headers.get("Origin")
+    if origin and origin in ALLOWED_ORIGINS:
+        # Allow the exact origin that made the request (best practice)
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
+
+# Note: for routes you must still accept OPTIONS / return 200 for preflight
+# e.g. in handlers:
+# if request.method == "OPTIONS": return "", 200
+
 
 # --- Environment Variables ---
 GOOGLE_SCRIPT_URL = os.environ.get(
