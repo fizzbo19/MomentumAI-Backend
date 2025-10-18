@@ -247,27 +247,30 @@ def submit_demo():
 @app.route("/api/search_player", methods=["POST", "OPTIONS"])
 def api_search_player():
     """
-    Accepts JSON { player_name: "some name" }
+    Accepts JSON { player_name: "some name" } or { name: "some name" }
     Returns list of matching player dicts (sanitized)
     """
     if request.method == "OPTIONS":
         return "", 200
     try:
-        payload = request.json or {}
+        # Safely try to get JSON data
+        payload = request.get_json(silent=True) or {}
+        # Look for the query under both expected keys
         query = (payload.get("player_name") or payload.get("name") or "").strip()
+        
         if not query:
-            return jsonify([])
+            return jsonify([]), 200 # Return empty list if no query found
+
         q = str(query).lower()
         # search across several name columns if present
         df = player_data
         name_cols = [c for c in ['short_name','long_name','player_name'] if c in df.columns]
         if not name_cols:
-            # fallback to any textual column containing q
             mask = df.astype(str).apply(lambda r: r.str.lower().str.contains(q).any(), axis=1)
         else:
             mask = False
             for c in name_cols:
-                mask = mask | df[c].astype(str).str.lower().str.contains(q)
+                mask = mask | df[c].astype(str).str.lower().str.contains(q, na=False) # added na=False for safety
         results = df[mask].head(20)
         out = []
         for _, row in results.iterrows():
@@ -278,6 +281,7 @@ def api_search_player():
                 "potential": int(row.get('potential') or 0),
                 "value_eur": int(row.get('value_eur') or 0),
                 "player_face_url": row.get('player_face_url') or '',
+                # Add full_attributes for modal to work
                 "full_attributes": {
                     "Overall": int(row.get('overall') or 0),
                     "Potential": int(row.get('potential') or 0),
@@ -289,26 +293,19 @@ def api_search_player():
                     "Defending": int(row.get('defending') or 0),
                     "Physicality": int(row.get('physic') or 0),
                     "Club": row.get('club_name') or '',
-                    "League": row.get('league_name') or ''
+                    "League": row.get('league_name') or '',
+                    "Wage (weekly_eur)": int(row.get('wage_eur') or 0)
                 }
             })
         return jsonify(sanitize_player_data(out))
     except Exception as e:
         print("Error in /api/search_player:", e)
-        return jsonify([]), 500
+        # Return 500 only if a true error, otherwise return empty list
+        return jsonify({"message": "Server error processing query."}), 500
+    
 
 @app.route("/api/find_players", methods=["POST","OPTIONS"])
 def api_find_players():
-    """
-    Input (JSON):
-      {
-        "club_position": "CM",
-        "filters": { "overall": [70,90], "age": [20,30], "pace": [60,99], ... },
-        "weights": { "pace": 80, "passing": 20, ... }  // optional
-      }
-    Output:
-      { "players": [ ... top players ... ] }
-    """
     if request.method == "OPTIONS":
         return "", 200
     try:
@@ -325,10 +322,17 @@ def api_find_players():
                 if isinstance(rng, (list,tuple)) and len(rng) >= 2:
                     lo = float(rng[0])
                     hi = float(rng[1])
-                    if key in df.columns:
-                        df = df[(df[key].astype(float) >= lo) & (df[key].astype(float) <= hi)]
-                    elif key.lower() in df.columns:
-                        df = df[(df[key.lower()].astype(float) >= lo) & (df[key.lower()].astype(float) <= hi)]
+                    
+                    # --- CRITICAL FIX: MAP FRONTEND KEY TO BACKEND COLUMN ---
+                    target_col = key
+                    if 'Value' in key:
+                        target_col = 'value_eur' # Map 'Value ($)' or 'Value (GBP)' to the actual column name
+                    # --- END CRITICAL FIX ---
+                    
+                    if target_col in df.columns:
+                        df = df[(df[target_col].astype(float) >= lo) & (df[target_col].astype(float) <= hi)]
+                    elif target_col.lower() in df.columns:
+                        df = df[(df[target_col.lower()].astype(float) >= lo) & (df[target_col.lower()].astype(float) <= hi)]
             except Exception as e:
                 # ignore bad filter entries
                 print("Filter parse error for",key,e)
@@ -353,6 +357,11 @@ def api_find_players():
             projections = project_player(row, years)
             last_proj_value = projections[-1]['projected_value_eur'] if projections else int(row.get('value_eur') or 0)
             neg = negotiation_range(int(row.get('value_eur') or 0), last_proj_value)
+            
+            # --- CALCULATE YEARLY WAGE (£) ---
+            weekly_wage = row.get('wage_eur', 0)
+            yearly_wage_gbp = weekly_wage * 52 if weekly_wage else 0
+            
             players_out.append({
                 "short_name": row.get('short_name') or row.get('player_name') or "N/A",
                 "club_position": row.get('club_position') or "",
@@ -360,8 +369,8 @@ def api_find_players():
                 "potential": int(row.get('potential') or 0),
                 "value_eur": int(row.get('value_eur') or 0),
                 "player_face_url": row.get('player_face_url') or "",
-                "min_value_eur": int(round((row.get('value_eur') or 0) * 0.8)),
-                "max_value_eur": int(round((row.get('value_eur') or 0) * 1.2)),
+                "min_value_eur": neg['min_offer'], # Use negotiation range from function
+                "max_value_eur": neg['max_offer'], # Use negotiation range from function
                 "momentum_score": score,
                 "projections": projections,
                 "negotiation": neg,
@@ -377,7 +386,7 @@ def api_find_players():
                     'Physicality': int(row.get('physic') or 0),
                     'Club': row.get('club_name') or '',
                     'League': row.get('league_name') or '',
-                    'Wage (weekly_eur)': int(row.get('wage_eur') or 0)
+                    'Wage (YEARLY GBP)': yearly_wage_gbp # Corrected key and value
                 }
             })
         # return top 5 explicitly to match UI expectation
