@@ -1,6 +1,6 @@
 """
 MomentumAI Backend – Final Production-Ready Version
-Fixes: Data type casting in filtering logic to eliminate HTTP 500 errors.
+FIXED: Dynamic filtering crash (HTTP 500) caused by mixed-case column mapping.
 """
 import os
 import math
@@ -27,25 +27,17 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:5000"
 ]
 
-# Enable CORS on all /api/* routes for allowed origins
 CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS}}, supports_credentials=True)
 
-# Extra safety: set Access-Control headers dynamically for preflight & responses
 @app.after_request
 def add_cors_headers(response):
     origin = request.headers.get("Origin")
     if origin and origin in ALLOWED_ORIGINS:
-        # Allow the exact origin that made the request (best practice)
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return response
-
-# Note: for routes you must still accept OPTIONS / return 200 for preflight
-# e.g. in handlers:
-# if request.method == "OPTIONS": return "", 200
-
 
 # --- Environment Variables ---
 GOOGLE_SCRIPT_URL = os.environ.get(
@@ -72,7 +64,6 @@ POSITION_WEIGHTS = {
     'CF': {'shooting':30,'passing':25,'dribbling':25,'pace':20}
 }
 
-# attributes to consider for scoring by default (comprehensive list)
 POSITION_METRICS_FOR_SCORING = POSITION_WEIGHTS 
 
 # --- Projection rules by age (years to project) ---
@@ -91,11 +82,8 @@ def initialize_app():
     fp = os.path.join(DATA_FOLDER_PATH, DATA_FILENAME)
     if not os.path.exists(fp):
         raise FileNotFoundError(f"Dataset not found at {fp} (set DATA_FOLDER_PATH/DATA_FILENAME env vars)")
-    # read - try both sheet names if needed
     player_data = pd.read_excel(fp)
-    # Ensure lowercase column names for robustness
     player_data.columns = [c if isinstance(c, str) else c for c in player_data.columns]
-    # Normalize common numeric columns
     for col in ['overall','potential','age','value_eur','pace','shooting','passing','dribbling','defending','physic','wage_eur']:
         if col in player_data.columns:
             player_data[col] = pd.to_numeric(player_data[col], errors='coerce').fillna(0)
@@ -107,7 +95,6 @@ def sanitize_player_data(players_list):
     for player in players_list:
         clean_player = {}
         for k,v in player.items():
-            # Check for numpy types, pandas NaT, or standard float NaNs
             is_nan_or_none = (
                 (isinstance(v, float) and (math.isnan(v) or math.isinf(v))) or
                 (pd.isna(v)) or 
@@ -115,10 +102,8 @@ def sanitize_player_data(players_list):
             )
             
             if is_nan_or_none:
-                # If it's NaN/None, set to None for clean JSON serialization
                 clean_player[k] = None
             elif isinstance(v, np.generic):
-                # Convert numpy types (like numpy.int64) to native Python types
                 clean_player[k] = v.item() 
             else:
                 clean_player[k] = v
@@ -199,13 +184,10 @@ POSITION_METRICS_FOR_SCORING = {
 # --- Routes ---
 @app.route("/api/submit_demo", methods=["POST", "OPTIONS"])
 def submit_demo():
-    if request.method == "OPTIONS":
-        return "", 200
+    if request.method == "OPTIONS": return "", 200
     try:
         data = request.json
-        if not data:
-            return jsonify({"success": False, "message": "No form data provided."}), 400
-        # forward to google script
+        if not data: return jsonify({"success": False, "message": "No form data provided."}), 400
         response = requests.post(GOOGLE_SCRIPT_URL, json=data, timeout=10)
         response.raise_for_status()
         return jsonify({"success": True, "message": "Form submitted successfully."}), 200
@@ -220,8 +202,7 @@ def api_search_player():
         payload = request.get_json(silent=True) or {}
         query = (payload.get("player_name") or payload.get("name") or "").strip()
         
-        if not query:
-            return jsonify([]) # Return empty array
+        if not query: return jsonify([]) 
 
         q = str(query).lower()
         df = player_data
@@ -237,7 +218,6 @@ def api_search_player():
         results = df[mask].head(20)
         out = []
         for _, row in results.iterrows():
-            # --- CALCULATE PROJECTIONS AND NEGOTIATION RANGE (Needed for Modal) ---
             age = int(row.get('age') or 0)
             years = years_to_project(age)
             projections = project_player(row, years)
@@ -246,7 +226,6 @@ def api_search_player():
             weekly_wage = row.get('wage_eur', 0)
             yearly_wage_gbp = weekly_wage * 52 if weekly_wage else 0
             
-            # --- Build player object for frontend ---
             out.append({
                 "short_name": row.get('short_name') or row.get('player_name') or "N/A",
                 "club_position": row.get('club_position') or "",
@@ -254,9 +233,9 @@ def api_search_player():
                 "potential": int(row.get('potential') or 0),
                 "value_eur": int(row.get('value_eur') or 0),
                 "player_face_url": row.get('player_face_url') or '',
-                "min_value_eur": neg['min_offer'], # Negotiation needed for card display
-                "max_value_eur": neg['max_offer'], # Negotiation needed for card display
-                "projections": projections, # Projections needed for modal
+                "min_value_eur": neg['min_offer'],
+                "max_value_eur": neg['max_offer'],
+                "projections": projections,
                 "full_attributes": {
                     "Overall": int(row.get('overall') or 0),
                     "Potential": int(row.get('potential') or 0),
@@ -296,24 +275,26 @@ def api_find_players():
                     lo = float(rng[0])
                     hi = float(rng[1])
                     
-                    # FIX: Map frontend key to backend column safely
-                    target_col = key
-                    if 'Value' in key:
+                    # 1. Determine the target column name (all lowercase in DB)
+                    target_col = key.lower() 
+                    if 'value' in target_col:
                         target_col = 'value_eur' 
-                    elif 'Overall' in key:
+                    elif 'overall' in target_col:
                         target_col = 'overall' 
-                    elif 'Age' in key:
-                        target_col = 'age' 
+                    elif 'age' in target_col:
+                        target_col = 'age'
                     
+                    # 2. Check if the column exists in the DataFrame
                     if target_col in df.columns:
                         # CRITICAL FIX: Ensure filtering handles float conversion properly
                         df = df[(df[target_col].astype(float) >= lo) & (df[target_col].astype(float) <= hi)]
-                    elif target_col.lower() in df.columns:
-                        df = df[(df[target_col.lower()].astype(float) >= lo) & (df[target_col.lower()].astype(float) <= hi)]
+                    else:
+                        # If a metric is requested that doesn't exist, log it and skip filter.
+                        # This avoids a KeyError which would cause a 500.
+                        print(f"Skipping filter for '{key}': column '{target_col}' not found.")
             except Exception as e:
-                # This catches the precise error and allows the function to complete
+                # If any conversion or comparison fails, halt this search gracefully.
                 print(f"CRASH POINT: Filter error on key '{key}' with range {rng}. Error: {e}")
-                # For safety, if a filter fails, we assume no results to prevent an internal crash.
                 return jsonify({"players": []}), 200 
 
         # Score players
@@ -329,7 +310,6 @@ def api_find_players():
         scored_sorted = sorted(scored, key=lambda x: x[0], reverse=True)
 
         players_out = []
-        # return top N (5) players
         for score, row in scored_sorted[:50]: 
             age = int(row.get('age') or 0)
             years = years_to_project(age)
@@ -367,7 +347,6 @@ def api_find_players():
                     'Wage (YEARLY GBP)': yearly_wage_gbp 
                 }
             })
-        # return top 5 explicitly to match UI expectation
         return jsonify({"players": sanitize_player_data(players_out[:5])})
     except Exception as e:
         print("Error in /api/find_players:", e)
