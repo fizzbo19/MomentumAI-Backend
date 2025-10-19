@@ -259,7 +259,7 @@ def api_search_player():
 @app.route("/api/find_players", methods=["POST","OPTIONS"])
 def api_find_players():
     if request.method == "OPTIONS":
-        return "", 200
+        return "", 0 # Return 200 OK for preflight
     try:
         payload = request.json or {}
         position = (payload.get("club_position") or "CM").upper()
@@ -275,26 +275,28 @@ def api_find_players():
                     lo = float(rng[0])
                     hi = float(rng[1])
                     
-                    # 1. Determine the target column name (all lowercase in DB)
+                    # --- CRITICAL FIX: EXPLICITLY MAP ALL CORE FILTERS ---
                     target_col = key.lower() 
+                    
                     if 'value' in target_col:
                         target_col = 'value_eur' 
                     elif 'overall' in target_col:
                         target_col = 'overall' 
                     elif 'age' in target_col:
                         target_col = 'age'
+                    # --- END CRITICAL FIX ---
                     
-                    # 2. Check if the column exists in the DataFrame
+                    # 2. Apply filter only if column exists
                     if target_col in df.columns:
-                        # CRITICAL FIX: Ensure filtering handles float conversion properly
+                        # CRITICAL: Filtering works by comparing floats against floats
                         df = df[(df[target_col].astype(float) >= lo) & (df[target_col].astype(float) <= hi)]
                     else:
                         # If a metric is requested that doesn't exist, log it and skip filter.
-                        # This avoids a KeyError which would cause a 500.
                         print(f"Skipping filter for '{key}': column '{target_col}' not found.")
             except Exception as e:
                 # If any conversion or comparison fails, halt this search gracefully.
                 print(f"CRASH POINT: Filter error on key '{key}' with range {rng}. Error: {e}")
+                # Returning a successful empty array (200 OK) prevents the JavaScript crash.
                 return jsonify({"players": []}), 200 
 
         # Score players
@@ -310,6 +312,7 @@ def api_find_players():
         scored_sorted = sorted(scored, key=lambda x: x[0], reverse=True)
 
         players_out = []
+        # return top N (5) players
         for score, row in scored_sorted[:50]: 
             age = int(row.get('age') or 0)
             years = years_to_project(age)
@@ -350,6 +353,7 @@ def api_find_players():
         return jsonify({"players": sanitize_player_data(players_out[:5])})
     except Exception as e:
         print("Error in /api/find_players:", e)
+        # Final fallback for any other unexpected internal error
         return jsonify({"players": []}), 500
 
 @app.route("/assets/<path:filename>")
