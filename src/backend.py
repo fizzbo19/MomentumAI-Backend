@@ -29,6 +29,26 @@ ALLOWED_ORIGINS = [
 # ✅ CORS
 CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS, "supports_credentials": True}})
 
+# ✅ ADD THIS RIGHT BELOW
+@app.route('/api/submit_demo', methods=['POST'])
+def submit_demo():
+    data = request.get_json()
+    if not data:
+        return jsonify({"success": False, "message": "No data received"}), 400
+
+    full_name = data.get("fullName")
+    email = data.get("email")
+    organization = data.get("organization")
+
+    # Log or handle the request
+    print(f"📩 Demo request from {full_name} ({email}) - {organization}")
+
+    # Send success response to frontend
+    return jsonify({"success": True, "message": "Demo request received!"})
+
+# (Then below this you can have your player search, dashboard, etc. routes)
+
+
 # --- Global OPTIONS preflight handler
 @app.before_request
 def handle_options_preflight():
