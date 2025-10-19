@@ -226,25 +226,6 @@ POSITION_METRICS_FOR_SCORING = {
     'CF': ['shooting','passing','dribbling','pace','physic']
 }
 
-# --- Routes ---
-from flask import request, jsonify
-
-@app.route("/api/submit_demo", methods=["POST"])
-def submit_demo():
-    try:
-        data = request.get_json()
-        full_name = data.get("fullName")
-        email = data.get("email")
-        organization = data.get("organization")
-        demo_access = data.get("demoAccess")
-
-        # (Optional) Save to DB or file for manual verification
-        print(f"Demo Request: {full_name} - {email} - {organization}")
-
-        return jsonify({"success": True, "message": "Form submitted successfully!"})
-    except Exception as e:
-        print(f"Error in submit_demo: {e}")
-        return jsonify({"success": False, "message": str(e)}), 400
 
 
 @app.route("/api/search_player", methods=["POST", "OPTIONS"])
