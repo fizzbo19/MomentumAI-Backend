@@ -104,7 +104,6 @@ def initialize_app():
     print(f"✅ Dataset loaded. Total players: {len(player_data)}")
 
 # --- Helpers ---
-# --- Helpers (Updated for Robust NaN/None Handling) ---
 def sanitize_player_data(players_list):
     clean_list = []
     for player in players_list:
@@ -118,7 +117,7 @@ def sanitize_player_data(players_list):
             )
             
             if is_nan_or_none:
-                # If it's a numeric field, send 0 or None. Let's send None for clarity.
+                # If it's a numeric field, send None.
                 clean_player[k] = None
             elif isinstance(v, np.generic):
                 # Convert numpy types (like numpy.int64) to native Python types
@@ -256,42 +255,58 @@ def submit_demo():
 
 @app.route("/api/search_player", methods=["POST", "OPTIONS"])
 def api_search_player():
+    """
+    Accepts JSON { player_name: "some name" } or { name: "some name" }
+    Returns list of matching player dicts (sanitized)
+    """
     if request.method == "OPTIONS":
         return "", 200
     try:
+        # Safely try to get JSON data
         payload = request.get_json(silent=True) or {}
+        # Look for the query under both expected keys
         query = (payload.get("player_name") or payload.get("name") or "").strip()
         
         if not query:
-            return jsonify([]), 200
+            return jsonify([]) # Return empty array
 
         q = str(query).lower()
         df = player_data
         name_cols = [c for c in ['short_name','long_name','player_name'] if c in df.columns]
-        if not name_cols:
-            mask = df.astype(str).apply(lambda r: r.str.lower().str.contains(q).any(), axis=1)
-        else:
-            mask = False
+        
+        mask = False
+        if name_cols:
             for c in name_cols:
                 mask = mask | df[c].astype(str).str.lower().str.contains(q, na=False) 
+        else:
+            mask = df.astype(str).apply(lambda r: r.str.lower().str.contains(q, na=False).any(), axis=1)
+            
         results = df[mask].head(20)
         out = []
         for _, row in results.iterrows():
-            # --- FIX: Use safe defaults (or 0 for numbers, or '' for strings) ---
-            ovr = int(row.get('overall') or 0)
-            pot = int(row.get('potential') or 0)
+            # --- CALCULATE PROJECTIONS AND NEGOTIATION RANGE (Needed for Modal) ---
             age = int(row.get('age') or 0)
+            years = years_to_project(age)
+            projections = project_player(row, years)
+            last_proj_value = projections[-1]['projected_value_eur'] if projections else int(row.get('value_eur') or 0)
+            neg = negotiation_range(int(row.get('value_eur') or 0), last_proj_value)
+            weekly_wage = row.get('wage_eur', 0)
+            yearly_wage_gbp = weekly_wage * 52 if weekly_wage else 0
             
+            # --- Build player object for frontend ---
             out.append({
                 "short_name": row.get('short_name') or row.get('player_name') or "N/A",
                 "club_position": row.get('club_position') or "",
-                "overall": ovr,
-                "potential": pot,
+                "overall": int(row.get('overall') or 0),
+                "potential": int(row.get('potential') or 0),
                 "value_eur": int(row.get('value_eur') or 0),
                 "player_face_url": row.get('player_face_url') or '',
+                "min_value_eur": neg['min_offer'], # Negotiation needed for card display
+                "max_value_eur": neg['max_offer'], # Negotiation needed for card display
+                "projections": projections, # Projections needed for modal
                 "full_attributes": {
-                    "Overall": ovr,
-                    "Potential": pot,
+                    "Overall": int(row.get('overall') or 0),
+                    "Potential": int(row.get('potential') or 0),
                     "Age": age,
                     "Pace": int(row.get('pace') or 0),
                     "Shooting": int(row.get('shooting') or 0),
@@ -301,13 +316,13 @@ def api_search_player():
                     "Physicality": int(row.get('physic') or 0),
                     "Club": row.get('club_name') or '',
                     "League": row.get('league_name') or '',
-                    "Wage (weekly_eur)": int(row.get('wage_eur') or 0)
+                    "Wage (YEARLY GBP)": yearly_wage_gbp
                 }
             })
         return jsonify(sanitize_player_data(out))
     except Exception as e:
         print("Error in /api/search_player:", e)
-        return jsonify({"message": "Server error processing query."}), 500
+        return jsonify({"message": f"Internal Server Error: {e}"}), 500
 
 @app.route("/api/find_players", methods=["POST","OPTIONS"])
 def api_find_players():
@@ -328,18 +343,16 @@ def api_find_players():
                     lo = float(rng[0])
                     hi = float(rng[1])
                     
-                    # --- CRITICAL FIX: MAP FRONTEND KEY TO BACKEND COLUMN ---
+                    # CRITICAL FIX: MAP FRONTEND KEY TO BACKEND COLUMN
                     target_col = key
                     if 'Value' in key:
-                        target_col = 'value_eur' # Map 'Value ($)' or 'Value (GBP)' to the actual column name
-                    # --- END CRITICAL FIX ---
+                        target_col = 'value_eur' 
                     
                     if target_col in df.columns:
                         df = df[(df[target_col].astype(float) >= lo) & (df[target_col].astype(float) <= hi)]
                     elif target_col.lower() in df.columns:
                         df = df[(df[target_col.lower()].astype(float) >= lo) & (df[target_col.lower()].astype(float) <= hi)]
             except Exception as e:
-                # ignore bad filter entries
                 print("Filter parse error for",key,e)
 
         # Score players
@@ -356,14 +369,13 @@ def api_find_players():
 
         players_out = []
         # return top N (5) players
-        for score, row in scored_sorted[:50]:  # keep up to 50 for frontend to pick top 5, but we'll return top 10 safe
+        for score, row in scored_sorted[:50]: 
             age = int(row.get('age') or 0)
             years = years_to_project(age)
             projections = project_player(row, years)
             last_proj_value = projections[-1]['projected_value_eur'] if projections else int(row.get('value_eur') or 0)
             neg = negotiation_range(int(row.get('value_eur') or 0), last_proj_value)
             
-            # --- CALCULATE YEARLY WAGE (£) ---
             weekly_wage = row.get('wage_eur', 0)
             yearly_wage_gbp = weekly_wage * 52 if weekly_wage else 0
             
@@ -374,8 +386,8 @@ def api_find_players():
                 "potential": int(row.get('potential') or 0),
                 "value_eur": int(row.get('value_eur') or 0),
                 "player_face_url": row.get('player_face_url') or "",
-                "min_value_eur": neg['min_offer'], # Use negotiation range from function
-                "max_value_eur": neg['max_offer'], # Use negotiation range from function
+                "min_value_eur": neg['min_offer'], 
+                "max_value_eur": neg['max_offer'], 
                 "momentum_score": score,
                 "projections": projections,
                 "negotiation": neg,
@@ -391,7 +403,7 @@ def api_find_players():
                     'Physicality': int(row.get('physic') or 0),
                     'Club': row.get('club_name') or '',
                     'League': row.get('league_name') or '',
-                    'Wage (YEARLY GBP)': yearly_wage_gbp # Corrected key and value
+                    'Wage (YEARLY GBP)': yearly_wage_gbp 
                 }
             })
         # return top 5 explicitly to match UI expectation
