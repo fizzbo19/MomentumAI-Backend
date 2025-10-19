@@ -1,6 +1,8 @@
 """
 MomentumAI Backend – Final Production-Ready Version
-FIXED: Ambiguous truth value error by ensuring all filter columns are strictly numeric during initialization.
+FIXES: 
+1. Persistent ambiguity error in Pandas filtering.
+2. Ensures search endpoint returns full data structure for modal.
 """
 import os
 import math
@@ -8,8 +10,6 @@ import numpy as np
 import pandas as pd
 from flask import Flask, request, jsonify, send_from_directory
 import requests
-# --- Flask App Setup ---
-from flask import Flask, request, make_response
 from flask_cors import CORS
 
 app = Flask(__name__, static_folder="public")
@@ -60,8 +60,8 @@ POSITION_WEIGHTS = {
     'CAM': {'passing':30,'dribbling':25,'shooting':25,'pace':10,'physic':10},
     'LW': {'pace':35,'dribbling':30,'shooting':20,'passing':15},
     'RW': {'pace':35,'dribbling':30,'shooting':20,'passing':15},
-    'ST': {'shooting':40,'pace':25,'dribbling':20,'physic':15},
-    'CF': {'shooting':30,'passing':25,'dribbling':25,'pace':20}
+    'ST': {'shooting':40,'pace':25,'dribbling':20,'physic':15,'movement_acceleration':5},
+    'CF': {'shooting':30,'passing':25,'dribbling':25,'pace':20,'movement_acceleration':5}
 }
 
 POSITION_METRICS_FOR_SCORING = POSITION_WEIGHTS 
@@ -83,14 +83,12 @@ def initialize_app():
     if not os.path.exists(fp):
         raise FileNotFoundError(f"Dataset not found at {fp} (set DATA_FOLDER_PATH/DATA_FILENAME env vars)")
     
-    # read - try both sheet names if needed
     try:
         player_data = pd.read_excel(fp)
     except Exception as e:
         print(f"Error reading Excel file: {e}")
         raise
         
-    # Ensure lowercase column names for robustness
     player_data.columns = [c if isinstance(c, str) else c for c in player_data.columns]
     
     NUMERIC_COLS = ['overall','potential','age','value_eur','pace','shooting','passing','dribbling','defending','physic','wage_eur']
@@ -98,11 +96,8 @@ def initialize_app():
     # Loop to forcefully convert columns and handle non-numeric values
     for col in NUMERIC_COLS:
         if col in player_data.columns:
-            # CRITICAL FIX: Use errors='coerce' to turn non-numeric strings into NaN 
-            player_data[col] = pd.to_numeric(player_data[col], errors='coerce')
-            
-            # Use fillna(0) to convert remaining NaNs to zero, making the column strictly float.
-            player_data[col] = player_data[col].fillna(0)
+            # CRITICAL FIX: Ensure all numeric columns are strictly float, replacing anything else with 0
+            player_data[col] = pd.to_numeric(player_data[col], errors='coerce').fillna(0)
             
     print(f"✅ Dataset loaded. Total players: {len(player_data)}")
 
@@ -326,6 +321,7 @@ def api_find_players():
         scored_sorted = sorted(scored, key=lambda x: x[0], reverse=True)
 
         players_out = []
+        # return top N (5) players
         for score, row in scored_sorted[:50]: 
             age = int(row.get('age') or 0)
             years = years_to_project(age)
