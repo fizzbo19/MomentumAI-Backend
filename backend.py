@@ -12,25 +12,24 @@ import pandas as pd
 from flask import Flask, request, jsonify, send_from_directory
 import requests
 from flask_cors import CORS
+app = Flask(__name__, static_folder="public", static_url_path="/public")
 
-app = Flask(__name__, static_folder="public")
+# ✅ FRONTEND URLS
+DEFAULT_FRONTEND = "https://momentum-ai-io.netlify.app"  # your live frontend URL
+FRONTEND_URL = os.environ.get("FRONTEND_URL", DEFAULT_FRONTEND)
 
-# Frontend origin for CORS - configure in Render env (safe default provided)
-# **CRITICAL FIX:** This must be the exact URL of your Netlify site.
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://momentum-ai-io.netlify.app") 
-
-# Allowed origins list (frontend + common local dev hosts)
-ALLOWED_ORIGINS = [
-    FRONTEND_URL,
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:5000",
-    "http://127.0.0.1:5000"
-]
-
-# Enable CORS on all /api/* routes for allowed origins
-# The `supports_credentials=True` is often needed for modern browsers.
-CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS}}, supports_credentials=True)
+# ✅ CORS (Backend API only)
+CORS(app, resources={
+    r"/api/*": {
+        "origins": [
+            FRONTEND_URL,
+            "https://momentumai-frontend.onrender.com",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000"
+        ],
+        "supports_credentials": True
+    }
+})
 
 @app.after_request
 def add_cors_headers(response):
@@ -46,7 +45,7 @@ def add_cors_headers(response):
 # --- Environment Variables ---
 GOOGLE_SCRIPT_URL = os.environ.get(
     "GOOGLE_SCRIPT_URL",
-    "https://script.google.com/macros/s/YOUR_SCRIPT_ID/exec"
+    "https://script.google.com/macros/s/AKfycbzKry-uh7HtLAQD_NolGX82xWeY2K8xZG9UjgOC_mmdNI7DpclWhGlesff_Qwe_jSau/exec"
 )
 DATA_FOLDER_PATH = os.environ.get("DATA_FOLDER_PATH", "data")
 DATA_FILENAME = os.environ.get(
@@ -198,18 +197,25 @@ POSITION_METRICS_FOR_SCORING = {
 }
 
 # --- Routes ---
-@app.route("/api/submit_demo", methods=["POST", "OPTIONS"])
+from flask import request, jsonify
+
+@app.route("/api/submit_demo", methods=["POST"])
 def submit_demo():
-    if request.method == "OPTIONS": return "", 200
     try:
-        data = request.json
-        if not data: return jsonify({"success": False, "message": "No form data provided."}), 400
-        response = requests.post(GOOGLE_SCRIPT_URL, json=data, timeout=10)
-        response.raise_for_status()
-        return jsonify({"success": True, "message": "Form submitted successfully."}), 200
-    except requests.exceptions.RequestException as e:
-        print("Error forwarding to Google Apps Script:", e)
-        return jsonify({"success": False, "message": "Error submitting form."}), 500
+        data = request.get_json()
+        full_name = data.get("fullName")
+        email = data.get("email")
+        organization = data.get("organization")
+        demo_access = data.get("demoAccess")
+
+        # (Optional) Save to DB or file for manual verification
+        print(f"Demo Request: {full_name} - {email} - {organization}")
+
+        return jsonify({"success": True, "message": "Form submitted successfully!"})
+    except Exception as e:
+        print(f"Error in submit_demo: {e}")
+        return jsonify({"success": False, "message": str(e)}), 400
+
 
 @app.route("/api/search_player", methods=["POST", "OPTIONS"])
 def api_search_player():
@@ -267,7 +273,7 @@ def api_search_player():
                     "Wage (YEARLY GBP)": yearly_wage_gbp
                 }
             })
-        return jsonify(sanitize_player_data(out))
+        return jsonify(json.loads(json.dumps(out, default=str)))
     except Exception as e:
         print("Error in /api/search_player:", e)
         return jsonify({"message": f"Internal Server Error: {e}"}), 500
@@ -328,7 +334,7 @@ def api_find_players():
         for score, row in scored_sorted[:50]: 
             age = int(row.get('age') or 0)
             years = years_to_project(age)
-            projections = project_player(row, years)
+            projections = project_player(row, years) or []
             last_proj_value = projections[-1]['projected_value_eur'] if projections else int(row.get('value_eur') or 0)
             neg = negotiation_range(int(row.get('value_eur') or 0), last_proj_value)
             
