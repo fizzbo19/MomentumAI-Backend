@@ -1,6 +1,6 @@
 """
 MomentumAI Backend – Final Production-Ready Version
-FIXED: Dynamic filtering crash (HTTP 500) caused by mixed-case column mapping.
+FIXED: Ambiguous truth value error by ensuring all filter columns are strictly numeric during initialization.
 """
 import os
 import math
@@ -82,11 +82,28 @@ def initialize_app():
     fp = os.path.join(DATA_FOLDER_PATH, DATA_FILENAME)
     if not os.path.exists(fp):
         raise FileNotFoundError(f"Dataset not found at {fp} (set DATA_FOLDER_PATH/DATA_FILENAME env vars)")
-    player_data = pd.read_excel(fp)
+    
+    # read - try both sheet names if needed
+    try:
+        player_data = pd.read_excel(fp)
+    except Exception as e:
+        print(f"Error reading Excel file: {e}")
+        raise
+        
+    # Ensure lowercase column names for robustness
     player_data.columns = [c if isinstance(c, str) else c for c in player_data.columns]
-    for col in ['overall','potential','age','value_eur','pace','shooting','passing','dribbling','defending','physic','wage_eur']:
+    
+    NUMERIC_COLS = ['overall','potential','age','value_eur','pace','shooting','passing','dribbling','defending','physic','wage_eur']
+    
+    # Loop to forcefully convert columns and handle non-numeric values
+    for col in NUMERIC_COLS:
         if col in player_data.columns:
-            player_data[col] = pd.to_numeric(player_data[col], errors='coerce').fillna(0)
+            # CRITICAL FIX: Use errors='coerce' to turn non-numeric strings into NaN 
+            player_data[col] = pd.to_numeric(player_data[col], errors='coerce')
+            
+            # Use fillna(0) to convert remaining NaNs to zero, making the column strictly float.
+            player_data[col] = player_data[col].fillna(0)
+            
     print(f"✅ Dataset loaded. Total players: {len(player_data)}")
 
 # --- Helpers (Sanitization, Scoring, Projection) ---
@@ -259,7 +276,7 @@ def api_search_player():
 @app.route("/api/find_players", methods=["POST","OPTIONS"])
 def api_find_players():
     if request.method == "OPTIONS":
-        return "", 0 # Return 200 OK for preflight
+        return "", 0
     try:
         payload = request.json or {}
         position = (payload.get("club_position") or "CM").upper()
@@ -275,18 +292,16 @@ def api_find_players():
                     lo = float(rng[0])
                     hi = float(rng[1])
                     
-                    # --- CRITICAL FIX: EXPLICITLY MAP ALL CORE FILTERS ---
+                    # 1. Determine the target column name (all lowercase in DB)
                     target_col = key.lower() 
-                    
                     if 'value' in target_col:
                         target_col = 'value_eur' 
                     elif 'overall' in target_col:
                         target_col = 'overall' 
                     elif 'age' in target_col:
                         target_col = 'age'
-                    # --- END CRITICAL FIX ---
                     
-                    # 2. Apply filter only if column exists
+                    # 2. Check if the column exists in the DataFrame
                     if target_col in df.columns:
                         # CRITICAL: Filtering works by comparing floats against floats
                         df = df[(df[target_col].astype(float) >= lo) & (df[target_col].astype(float) <= hi)]
@@ -296,7 +311,6 @@ def api_find_players():
             except Exception as e:
                 # If any conversion or comparison fails, halt this search gracefully.
                 print(f"CRASH POINT: Filter error on key '{key}' with range {rng}. Error: {e}")
-                # Returning a successful empty array (200 OK) prevents the JavaScript crash.
                 return jsonify({"players": []}), 200 
 
         # Score players
@@ -312,7 +326,6 @@ def api_find_players():
         scored_sorted = sorted(scored, key=lambda x: x[0], reverse=True)
 
         players_out = []
-        # return top N (5) players
         for score, row in scored_sorted[:50]: 
             age = int(row.get('age') or 0)
             years = years_to_project(age)
@@ -353,12 +366,10 @@ def api_find_players():
         return jsonify({"players": sanitize_player_data(players_out[:5])})
     except Exception as e:
         print("Error in /api/find_players:", e)
-        # Final fallback for any other unexpected internal error
         return jsonify({"players": []}), 500
 
 @app.route("/assets/<path:filename>")
 def serve_assets(filename):
-    # Serve e.g. public/assets/<file>
     return send_from_directory(os.path.join(app.root_path, "public/assets"), filename)
 
 # --- Main Execution ---
