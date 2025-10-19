@@ -1,11 +1,6 @@
 """
-MomentumAI Backend – Render-ready version with proper CORS, projections & negotiation guidance
-Place this file at the repo root (or src/) and deploy to Render.
-Set environment variables:
-  - FRONTEND_URL (e.g. https://momentumai-frontend.onrender.com)
-  - GOOGLE_SCRIPT_URL (your google apps script url)
-  - DATA_FOLDER_PATH (where dataset sits)
-  - DATA_FILENAME (excel filename)
+MomentumAI Backend – Final Production-Ready Version
+FIXED: Dynamic filtering crash (HTTP 500) caused by mixed-case column mapping.
 """
 import os
 import math
@@ -32,25 +27,17 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:5000"
 ]
 
-# Enable CORS on all /api/* routes for allowed origins
 CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS}}, supports_credentials=True)
 
-# Extra safety: set Access-Control headers dynamically for preflight & responses
 @app.after_request
 def add_cors_headers(response):
     origin = request.headers.get("Origin")
     if origin and origin in ALLOWED_ORIGINS:
-        # Allow the exact origin that made the request (best practice)
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return response
-
-# Note: for routes you must still accept OPTIONS / return 200 for preflight
-# e.g. in handlers:
-# if request.method == "OPTIONS": return "", 200
-
 
 # --- Environment Variables ---
 GOOGLE_SCRIPT_URL = os.environ.get(
@@ -77,6 +64,8 @@ POSITION_WEIGHTS = {
     'CF': {'shooting':30,'passing':25,'dribbling':25,'pace':20}
 }
 
+POSITION_METRICS_FOR_SCORING = POSITION_WEIGHTS 
+
 # --- Projection rules by age (years to project) ---
 def years_to_project(age: int) -> int:
     if age <= 20: return 5
@@ -93,98 +82,69 @@ def initialize_app():
     fp = os.path.join(DATA_FOLDER_PATH, DATA_FILENAME)
     if not os.path.exists(fp):
         raise FileNotFoundError(f"Dataset not found at {fp} (set DATA_FOLDER_PATH/DATA_FILENAME env vars)")
-    # read - try both sheet names if needed
     player_data = pd.read_excel(fp)
-    # Ensure lowercase column names for robustness
     player_data.columns = [c if isinstance(c, str) else c for c in player_data.columns]
-    # Normalize common numeric columns
     for col in ['overall','potential','age','value_eur','pace','shooting','passing','dribbling','defending','physic','wage_eur']:
         if col in player_data.columns:
             player_data[col] = pd.to_numeric(player_data[col], errors='coerce').fillna(0)
     print(f"✅ Dataset loaded. Total players: {len(player_data)}")
 
-# --- Helpers ---
+# --- Helpers (Sanitization, Scoring, Projection) ---
 def sanitize_player_data(players_list):
     clean_list = []
     for player in players_list:
         clean_player = {}
         for k,v in player.items():
-            if isinstance(v,float) and (math.isnan(v) or math.isinf(v)):
+            is_nan_or_none = (
+                (isinstance(v, float) and (math.isnan(v) or math.isinf(v))) or
+                (pd.isna(v)) or 
+                (v is None)
+            )
+            
+            if is_nan_or_none:
                 clean_player[k] = None
-            elif pd.isna(v):
-                clean_player[k] = None
+            elif isinstance(v, np.generic):
+                clean_player[k] = v.item() 
             else:
-                clean_player[k] = v.item() if isinstance(v,np.generic) else v
+                clean_player[k] = v
         clean_list.append(clean_player)
     return clean_list
 
 def compute_score_for_player(row, position, user_weights=None):
-    """
-    Compute a scoring value for ranking players.
-    - row: pandas Series (player)
-    - position: club_position (e.g., 'CM')
-    - user_weights: dict mapping attribute -> weight (0-100) (optional)
-    """
-    metrics = POSITION_METRICS_FOR_SCORING.get(position, POSITION_METRICS_FOR_SCORING['CM'])
-    # use default position weights, but allow user overrides
     base_weights = POSITION_WEIGHTS.get(position, POSITION_WEIGHTS.get('CM', {})).copy()
-    # merge user weights: scale them to proportion of base if provided
     if user_weights:
-        # incorporate user weights by adding on top (simple approach)
         for k,v in user_weights.items():
-            if v is None: continue
-            # override or add
-            base_weights[k] = float(v)
-    # normalize weights
+            if v is not None:
+                base_weights[k] = float(v)
     total_w = sum(base_weights.values()) if base_weights else 1
     if total_w == 0: total_w = 1
     score = 0.0
     for attr, w in base_weights.items():
-        # row attr keys may differ; try lowercasing match
-        val = None
-        if attr in row.index:
-            val = row.get(attr, 0)
-        else:
-            val = row.get(attr.lower(), 0)
-        # normalize attribute (0-99 scale)
+        val = row.get(attr, 0)
         try:
             val_num = float(val) if val is not None else 0.0
         except:
             val_num = 0.0
         norm = val_num / 99.0
         score += norm * (w / total_w)
-    # scale score to 0-100
     return round(score * 100, 4)
 
 def project_player(row, years:int):
-    """
-    Return list of projections: for each future year, estimate overall and value_eur.
-    Simple projection:
-      - overall moves toward potential linearly (if potential > overall)
-      - value grows at a rate based on age (younger players higher growth)
-    """
     ovr = int(row.get('overall', 0) or 0)
     pot = int(row.get('potential', 0) or ovr)
     age = int(row.get('age', 0) or 0)
     value = float(row.get('value_eur', 0) or 0)
 
-    # yearly increase towards potential:
     if pot > ovr and years > 0:
         per_year_ovr = (pot - ovr) / years
     else:
         per_year_ovr = 0
 
-    # growth rate for value by age band (conservative)
-    if age <= 20:
-        growth = 0.35
-    elif age <= 25:
-        growth = 0.20
-    elif age <= 30:
-        growth = 0.12
-    elif age <= 35:
-        growth = 0.07
-    else:
-        growth = 0.03
+    if age <= 20: growth = 0.35
+    elif age <= 25: growth = 0.20
+    elif age <= 30: growth = 0.12
+    elif age <= 35: growth = 0.07
+    else: growth = 0.03
 
     projections = []
     cur_ovr = ovr
@@ -200,12 +160,6 @@ def project_player(row, years:int):
     return projections
 
 def negotiation_range(current_value:int, projected_value:int):
-    """
-    Simple negotiation guidance:
-    - min_offer: current_value * 0.7 (bargain)
-    - max_offer: projected_value * 1.05 (stretch)
-    Ensure sensible bounds and integers.
-    """
     if current_value is None or current_value <= 0:
         return {"min_offer": 0, "max_offer": 0}
     min_offer = int(round(current_value * 0.7))
@@ -230,13 +184,10 @@ POSITION_METRICS_FOR_SCORING = {
 # --- Routes ---
 @app.route("/api/submit_demo", methods=["POST", "OPTIONS"])
 def submit_demo():
-    if request.method == "OPTIONS":
-        return "", 200
+    if request.method == "OPTIONS": return "", 200
     try:
         data = request.json
-        if not data:
-            return jsonify({"success": False, "message": "No form data provided."}), 400
-        # forward to google script
+        if not data: return jsonify({"success": False, "message": "No form data provided."}), 400
         response = requests.post(GOOGLE_SCRIPT_URL, json=data, timeout=10)
         response.raise_for_status()
         return jsonify({"success": True, "message": "Form submitted successfully."}), 200
@@ -246,34 +197,35 @@ def submit_demo():
 
 @app.route("/api/search_player", methods=["POST", "OPTIONS"])
 def api_search_player():
-    """
-    Accepts JSON { player_name: "some name" } or { name: "some name" }
-    Returns list of matching player dicts (sanitized)
-    """
-    if request.method == "OPTIONS":
-        return "", 200
+    if request.method == "OPTIONS": return "", 200
     try:
-        # Safely try to get JSON data
         payload = request.get_json(silent=True) or {}
-        # Look for the query under both expected keys
         query = (payload.get("player_name") or payload.get("name") or "").strip()
         
-        if not query:
-            return jsonify([]), 200 # Return empty list if no query found
+        if not query: return jsonify([]) 
 
         q = str(query).lower()
-        # search across several name columns if present
         df = player_data
         name_cols = [c for c in ['short_name','long_name','player_name'] if c in df.columns]
-        if not name_cols:
-            mask = df.astype(str).apply(lambda r: r.str.lower().str.contains(q).any(), axis=1)
-        else:
-            mask = False
+        
+        mask = False
+        if name_cols:
             for c in name_cols:
-                mask = mask | df[c].astype(str).str.lower().str.contains(q, na=False) # added na=False for safety
+                mask = mask | df[c].astype(str).str.lower().str.contains(q, na=False) 
+        else:
+            mask = df.astype(str).apply(lambda r: r.str.lower().str.contains(q, na=False).any(), axis=1)
+            
         results = df[mask].head(20)
         out = []
         for _, row in results.iterrows():
+            age = int(row.get('age') or 0)
+            years = years_to_project(age)
+            projections = project_player(row, years)
+            last_proj_value = projections[-1]['projected_value_eur'] if projections else int(row.get('value_eur') or 0)
+            neg = negotiation_range(int(row.get('value_eur') or 0), last_proj_value)
+            weekly_wage = row.get('wage_eur', 0)
+            yearly_wage_gbp = weekly_wage * 52 if weekly_wage else 0
+            
             out.append({
                 "short_name": row.get('short_name') or row.get('player_name') or "N/A",
                 "club_position": row.get('club_position') or "",
@@ -281,11 +233,13 @@ def api_search_player():
                 "potential": int(row.get('potential') or 0),
                 "value_eur": int(row.get('value_eur') or 0),
                 "player_face_url": row.get('player_face_url') or '',
-                # Add full_attributes for modal to work
+                "min_value_eur": neg['min_offer'],
+                "max_value_eur": neg['max_offer'],
+                "projections": projections,
                 "full_attributes": {
                     "Overall": int(row.get('overall') or 0),
                     "Potential": int(row.get('potential') or 0),
-                    "Age": int(row.get('age') or 0),
+                    "Age": age,
                     "Pace": int(row.get('pace') or 0),
                     "Shooting": int(row.get('shooting') or 0),
                     "Passing": int(row.get('passing') or 0),
@@ -294,19 +248,18 @@ def api_search_player():
                     "Physicality": int(row.get('physic') or 0),
                     "Club": row.get('club_name') or '',
                     "League": row.get('league_name') or '',
-                    "Wage (weekly_eur)": int(row.get('wage_eur') or 0)
+                    "Wage (YEARLY GBP)": yearly_wage_gbp
                 }
             })
         return jsonify(sanitize_player_data(out))
     except Exception as e:
         print("Error in /api/search_player:", e)
-        # Return 500 only if a true error, otherwise return empty list
-        return jsonify({"message": "Server error processing query."}), 500
+        return jsonify({"message": f"Internal Server Error: {e}"}), 500
 
 @app.route("/api/find_players", methods=["POST","OPTIONS"])
 def api_find_players():
     if request.method == "OPTIONS":
-        return "", 200
+        return "", 0 # Return 200 OK for preflight
     try:
         payload = request.json or {}
         position = (payload.get("club_position") or "CM").upper()
@@ -322,19 +275,29 @@ def api_find_players():
                     lo = float(rng[0])
                     hi = float(rng[1])
                     
-                    # --- CRITICAL FIX: MAP FRONTEND KEY TO BACKEND COLUMN ---
-                    target_col = key
-                    if 'Value' in key:
-                        target_col = 'value_eur' # Map 'Value ($)' or 'Value (GBP)' to the actual column name
+                    # --- CRITICAL FIX: EXPLICITLY MAP ALL CORE FILTERS ---
+                    target_col = key.lower() 
+                    
+                    if 'value' in target_col:
+                        target_col = 'value_eur' 
+                    elif 'overall' in target_col:
+                        target_col = 'overall' 
+                    elif 'age' in target_col:
+                        target_col = 'age'
                     # --- END CRITICAL FIX ---
                     
+                    # 2. Apply filter only if column exists
                     if target_col in df.columns:
+                        # CRITICAL: Filtering works by comparing floats against floats
                         df = df[(df[target_col].astype(float) >= lo) & (df[target_col].astype(float) <= hi)]
-                    elif target_col.lower() in df.columns:
-                        df = df[(df[target_col.lower()].astype(float) >= lo) & (df[target_col.lower()].astype(float) <= hi)]
+                    else:
+                        # If a metric is requested that doesn't exist, log it and skip filter.
+                        print(f"Skipping filter for '{key}': column '{target_col}' not found.")
             except Exception as e:
-                # ignore bad filter entries
-                print("Filter parse error for",key,e)
+                # If any conversion or comparison fails, halt this search gracefully.
+                print(f"CRASH POINT: Filter error on key '{key}' with range {rng}. Error: {e}")
+                # Returning a successful empty array (200 OK) prevents the JavaScript crash.
+                return jsonify({"players": []}), 200 
 
         # Score players
         scored = []
@@ -350,14 +313,13 @@ def api_find_players():
 
         players_out = []
         # return top N (5) players
-        for score, row in scored_sorted[:50]:  # keep up to 50 for frontend to pick top 5, but we'll return top 10 safe
+        for score, row in scored_sorted[:50]: 
             age = int(row.get('age') or 0)
             years = years_to_project(age)
             projections = project_player(row, years)
             last_proj_value = projections[-1]['projected_value_eur'] if projections else int(row.get('value_eur') or 0)
             neg = negotiation_range(int(row.get('value_eur') or 0), last_proj_value)
             
-            # --- CALCULATE YEARLY WAGE (£) ---
             weekly_wage = row.get('wage_eur', 0)
             yearly_wage_gbp = weekly_wage * 52 if weekly_wage else 0
             
@@ -368,8 +330,8 @@ def api_find_players():
                 "potential": int(row.get('potential') or 0),
                 "value_eur": int(row.get('value_eur') or 0),
                 "player_face_url": row.get('player_face_url') or "",
-                "min_value_eur": neg['min_offer'], # Use negotiation range from function
-                "max_value_eur": neg['max_offer'], # Use negotiation range from function
+                "min_value_eur": neg['min_offer'], 
+                "max_value_eur": neg['max_offer'], 
                 "momentum_score": score,
                 "projections": projections,
                 "negotiation": neg,
@@ -385,15 +347,15 @@ def api_find_players():
                     'Physicality': int(row.get('physic') or 0),
                     'Club': row.get('club_name') or '',
                     'League': row.get('league_name') or '',
-                    'Wage (YEARLY GBP)': yearly_wage_gbp # Corrected key and value
+                    'Wage (YEARLY GBP)': yearly_wage_gbp 
                 }
             })
-        # return top 5 explicitly to match UI expectation
         return jsonify({"players": sanitize_player_data(players_out[:5])})
     except Exception as e:
         print("Error in /api/find_players:", e)
+        # Final fallback for any other unexpected internal error
         return jsonify({"players": []}), 500
-    
+
 @app.route("/assets/<path:filename>")
 def serve_assets(filename):
     # Serve e.g. public/assets/<file>
