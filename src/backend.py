@@ -15,32 +15,42 @@ from flask_cors import CORS
 app = Flask(__name__, static_folder="public", static_url_path="/public")
 
 # ✅ FRONTEND URLS
-DEFAULT_FRONTEND = "https://momentum-ai-io.netlify.app"  # your live frontend URL
+DEFAULT_FRONTEND = "https://momentum-ai-io.netlify.app"  # live frontend
 FRONTEND_URL = os.environ.get("FRONTEND_URL", DEFAULT_FRONTEND)
 
-# ✅ CORS (Backend API only)
-CORS(app, resources={
-    r"/api/*": {
-        "origins": [
-            FRONTEND_URL,
-            "https://momentumai-frontend.onrender.com",
-            "http://localhost:3000",
-            "http://127.0.0.1:3000"
-        ],
-        "supports_credentials": True
-    }
-})
+# --- Allowed origins
+ALLOWED_ORIGINS = [
+    FRONTEND_URL,
+    "https://momentumai-frontend.onrender.com",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000"
+]
 
+# ✅ CORS
+CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS, "supports_credentials": True}})
+
+# --- Global OPTIONS preflight handler
+@app.before_request
+def handle_options_preflight():
+    if request.method == "OPTIONS" and request.path.startswith("/api/"):
+        response = app.make_response("")
+        response.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "")
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        return response, 200
+
+# --- After request to add CORS headers dynamically
 @app.after_request
 def add_cors_headers(response):
     origin = request.headers.get("Origin")
-    # CRITICAL: Dynamically set the header to match the request origin if allowed
     if origin and origin in ALLOWED_ORIGINS:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return response
+
 
 # --- Environment Variables ---
 GOOGLE_SCRIPT_URL = os.environ.get(
