@@ -1,8 +1,9 @@
 """
-MomentumAI Backend – Final Production-Ready Version
+MomentumScout Backend – Final Production-Ready Version
 FIXES: 
-1. Persistent ambiguity error in Pandas filtering.
-2. Ensures search endpoint returns full data structure for modal.
+1. Persistent ambiguity error in Pandas filtering (initialization and runtime).
+2. Ensures all core filters (Value, Age, Overall) are safely mapped.
+3. Implements final CORS solution.
 """
 import os
 import math
@@ -15,8 +16,8 @@ from flask_cors import CORS
 app = Flask(__name__, static_folder="public")
 
 # Frontend origin for CORS - configure in Render env (safe default provided)
-DEFAULT_FRONTEND = "https://momentumai-frontend.onrender.com"
-FRONTEND_URL = os.environ.get("FRONTEND_URL", DEFAULT_FRONTEND)
+# **CRITICAL FIX:** This must be the exact URL of your Netlify site.
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://momentum-ai-io.netlify.app") 
 
 # Allowed origins list (frontend + common local dev hosts)
 ALLOWED_ORIGINS = [
@@ -27,11 +28,14 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:5000"
 ]
 
+# Enable CORS on all /api/* routes for allowed origins
+# The `supports_credentials=True` is often needed for modern browsers.
 CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS}}, supports_credentials=True)
 
 @app.after_request
 def add_cors_headers(response):
     origin = request.headers.get("Origin")
+    # CRITICAL: Dynamically set the header to match the request origin if allowed
     if origin and origin in ALLOWED_ORIGINS:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
@@ -142,10 +146,10 @@ def compute_score_for_player(row, position, user_weights=None):
     return round(score * 100, 4)
 
 def project_player(row, years:int):
-    ovr = int(row.get('overall', 0) or 0)
-    pot = int(row.get('potential', 0) or ovr)
-    age = int(row.get('age', 0) or 0)
-    value = float(row.get('value_eur', 0) or 0)
+    ovr = int(row.get('overall') or 0)
+    pot = int(row.get('potential') or ovr)
+    age = int(row.get('age') or 0)
+    value = float(row.get('value_eur') or 0)
 
     if pot > ovr and years > 0:
         per_year_ovr = (pot - ovr) / years
@@ -321,7 +325,6 @@ def api_find_players():
         scored_sorted = sorted(scored, key=lambda x: x[0], reverse=True)
 
         players_out = []
-        # return top N (5) players
         for score, row in scored_sorted[:50]: 
             age = int(row.get('age') or 0)
             years = years_to_project(age)

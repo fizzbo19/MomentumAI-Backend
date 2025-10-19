@@ -1,6 +1,9 @@
 """
-MomentumAI Backend – Final Production-Ready Version
-FIXED: Ambiguous truth value error by ensuring all filter columns are strictly numeric during initialization.
+MomentumScout Backend – Final Production-Ready Version
+FIXES: 
+1. Persistent ambiguity error in Pandas filtering (initialization and runtime).
+2. Ensures all core filters (Value, Age, Overall) are safely mapped.
+3. Implements final CORS solution.
 """
 import os
 import math
@@ -8,15 +11,13 @@ import numpy as np
 import pandas as pd
 from flask import Flask, request, jsonify, send_from_directory
 import requests
-# --- Flask App Setup ---
-from flask import Flask, request, make_response
 from flask_cors import CORS
 
 app = Flask(__name__, static_folder="public")
 
 # Frontend origin for CORS - configure in Render env (safe default provided)
-DEFAULT_FRONTEND = "https://momentumai-frontend.onrender.com"
-FRONTEND_URL = os.environ.get("FRONTEND_URL", DEFAULT_FRONTEND)
+# **CRITICAL FIX:** This must be the exact URL of your Netlify site.
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://momentum-ai-io.netlify.app") 
 
 # Allowed origins list (frontend + common local dev hosts)
 ALLOWED_ORIGINS = [
@@ -27,11 +28,14 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:5000"
 ]
 
+# Enable CORS on all /api/* routes for allowed origins
+# The `supports_credentials=True` is often needed for modern browsers.
 CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS}}, supports_credentials=True)
 
 @app.after_request
 def add_cors_headers(response):
     origin = request.headers.get("Origin")
+    # CRITICAL: Dynamically set the header to match the request origin if allowed
     if origin and origin in ALLOWED_ORIGINS:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
@@ -60,8 +64,8 @@ POSITION_WEIGHTS = {
     'CAM': {'passing':30,'dribbling':25,'shooting':25,'pace':10,'physic':10},
     'LW': {'pace':35,'dribbling':30,'shooting':20,'passing':15},
     'RW': {'pace':35,'dribbling':30,'shooting':20,'passing':15},
-    'ST': {'shooting':40,'pace':25,'dribbling':20,'physic':15},
-    'CF': {'shooting':30,'passing':25,'dribbling':25,'pace':20}
+    'ST': {'shooting':40,'pace':25,'dribbling':20,'physic':15,'movement_acceleration':5},
+    'CF': {'shooting':30,'passing':25,'dribbling':25,'pace':20,'movement_acceleration':5}
 }
 
 POSITION_METRICS_FOR_SCORING = POSITION_WEIGHTS 
@@ -83,14 +87,12 @@ def initialize_app():
     if not os.path.exists(fp):
         raise FileNotFoundError(f"Dataset not found at {fp} (set DATA_FOLDER_PATH/DATA_FILENAME env vars)")
     
-    # read - try both sheet names if needed
     try:
         player_data = pd.read_excel(fp)
     except Exception as e:
         print(f"Error reading Excel file: {e}")
         raise
         
-    # Ensure lowercase column names for robustness
     player_data.columns = [c if isinstance(c, str) else c for c in player_data.columns]
     
     NUMERIC_COLS = ['overall','potential','age','value_eur','pace','shooting','passing','dribbling','defending','physic','wage_eur']
@@ -98,11 +100,8 @@ def initialize_app():
     # Loop to forcefully convert columns and handle non-numeric values
     for col in NUMERIC_COLS:
         if col in player_data.columns:
-            # CRITICAL FIX: Use errors='coerce' to turn non-numeric strings into NaN 
-            player_data[col] = pd.to_numeric(player_data[col], errors='coerce')
-            
-            # Use fillna(0) to convert remaining NaNs to zero, making the column strictly float.
-            player_data[col] = player_data[col].fillna(0)
+            # CRITICAL FIX: Ensure all numeric columns are strictly float, replacing anything else with 0
+            player_data[col] = pd.to_numeric(player_data[col], errors='coerce').fillna(0)
             
     print(f"✅ Dataset loaded. Total players: {len(player_data)}")
 
@@ -147,10 +146,10 @@ def compute_score_for_player(row, position, user_weights=None):
     return round(score * 100, 4)
 
 def project_player(row, years:int):
-    ovr = int(row.get('overall', 0) or 0)
-    pot = int(row.get('potential', 0) or ovr)
-    age = int(row.get('age', 0) or 0)
-    value = float(row.get('value_eur', 0) or 0)
+    ovr = int(row.get('overall') or 0)
+    pot = int(row.get('potential') or ovr)
+    age = int(row.get('age') or 0)
+    value = float(row.get('value_eur') or 0)
 
     if pot > ovr and years > 0:
         per_year_ovr = (pot - ovr) / years
