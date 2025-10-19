@@ -104,17 +104,27 @@ def initialize_app():
     print(f"✅ Dataset loaded. Total players: {len(player_data)}")
 
 # --- Helpers ---
+# --- Helpers (Updated for Robust NaN/None Handling) ---
 def sanitize_player_data(players_list):
     clean_list = []
     for player in players_list:
         clean_player = {}
         for k,v in player.items():
-            if isinstance(v,float) and (math.isnan(v) or math.isinf(v)):
+            # Check for numpy types, pandas NaT, or standard float NaNs
+            is_nan_or_none = (
+                (isinstance(v, float) and (math.isnan(v) or math.isinf(v))) or
+                (pd.isna(v)) or 
+                (v is None)
+            )
+            
+            if is_nan_or_none:
+                # If it's a numeric field, send 0 or None. Let's send None for clarity.
                 clean_player[k] = None
-            elif pd.isna(v):
-                clean_player[k] = None
+            elif isinstance(v, np.generic):
+                # Convert numpy types (like numpy.int64) to native Python types
+                clean_player[k] = v.item() 
             else:
-                clean_player[k] = v.item() if isinstance(v,np.generic) else v
+                clean_player[k] = v
         clean_list.append(clean_player)
     return clean_list
 
@@ -246,23 +256,16 @@ def submit_demo():
 
 @app.route("/api/search_player", methods=["POST", "OPTIONS"])
 def api_search_player():
-    """
-    Accepts JSON { player_name: "some name" } or { name: "some name" }
-    Returns list of matching player dicts (sanitized)
-    """
     if request.method == "OPTIONS":
         return "", 200
     try:
-        # Safely try to get JSON data
         payload = request.get_json(silent=True) or {}
-        # Look for the query under both expected keys
         query = (payload.get("player_name") or payload.get("name") or "").strip()
         
         if not query:
-            return jsonify([]), 200 # Return empty list if no query found
+            return jsonify([]), 200
 
         q = str(query).lower()
-        # search across several name columns if present
         df = player_data
         name_cols = [c for c in ['short_name','long_name','player_name'] if c in df.columns]
         if not name_cols:
@@ -270,22 +273,26 @@ def api_search_player():
         else:
             mask = False
             for c in name_cols:
-                mask = mask | df[c].astype(str).str.lower().str.contains(q, na=False) # added na=False for safety
+                mask = mask | df[c].astype(str).str.lower().str.contains(q, na=False) 
         results = df[mask].head(20)
         out = []
         for _, row in results.iterrows():
+            # --- FIX: Use safe defaults (or 0 for numbers, or '' for strings) ---
+            ovr = int(row.get('overall') or 0)
+            pot = int(row.get('potential') or 0)
+            age = int(row.get('age') or 0)
+            
             out.append({
                 "short_name": row.get('short_name') or row.get('player_name') or "N/A",
                 "club_position": row.get('club_position') or "",
-                "overall": int(row.get('overall') or 0),
-                "potential": int(row.get('potential') or 0),
+                "overall": ovr,
+                "potential": pot,
                 "value_eur": int(row.get('value_eur') or 0),
                 "player_face_url": row.get('player_face_url') or '',
-                # Add full_attributes for modal to work
                 "full_attributes": {
-                    "Overall": int(row.get('overall') or 0),
-                    "Potential": int(row.get('potential') or 0),
-                    "Age": int(row.get('age') or 0),
+                    "Overall": ovr,
+                    "Potential": pot,
+                    "Age": age,
                     "Pace": int(row.get('pace') or 0),
                     "Shooting": int(row.get('shooting') or 0),
                     "Passing": int(row.get('passing') or 0),
@@ -300,9 +307,7 @@ def api_search_player():
         return jsonify(sanitize_player_data(out))
     except Exception as e:
         print("Error in /api/search_player:", e)
-        # Return 500 only if a true error, otherwise return empty list
         return jsonify({"message": "Server error processing query."}), 500
-    
 
 @app.route("/api/find_players", methods=["POST","OPTIONS"])
 def api_find_players():
