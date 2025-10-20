@@ -297,7 +297,9 @@ def api_search_player():
                     "Club": row.get('club_name') or '',
                     "League": row.get('league_name') or '',
                     "Wage (YEARLY GBP)": yearly_wage_gbp
-                }
+                },
+                "raw_attributes": clean_json(row.to_dict())
+
             })
         
         # ✅ Clean invalid values like NaN/inf
@@ -308,16 +310,7 @@ def api_search_player():
         print("Error in /api/search_player:", e)
         return jsonify({"message": f"Internal Server Error: {e}"}), 500
 
-def clean_json(data):
-    """Recursively replace NaN/inf values with None so JSON stays valid."""
-    if isinstance(data, dict):
-        return {k: clean_json(v) for k, v in data.items()}
-    elif isinstance(data, list):
-        return [clean_json(v) for v in data]
-    elif isinstance(data, float):
-        if math.isnan(data) or math.isinf(data):
-            return None
-    return data
+
 
 @app.route("/api/find_players", methods=["POST","OPTIONS"])
 def api_find_players():
@@ -401,7 +394,9 @@ def api_find_players():
                     'Club': row.get('club_name') or '',
                     'League': row.get('league_name') or '',
                     'Wage (YEARLY GBP)': yearly_wage_gbp
-                }
+                },
+                "raw_attributes": clean_json(row.to_dict())
+
             })
 
         # ✅ Clean invalid JSON values (NaN, inf, etc)
