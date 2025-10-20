@@ -12,6 +12,8 @@ import pandas as pd
 from flask import Flask, request, jsonify, send_from_directory
 import requests
 from flask_cors import CORS
+import json
+
 app = Flask(__name__, static_folder="public", static_url_path="/public")
 
 # ✅ FRONTEND URLS
