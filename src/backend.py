@@ -14,8 +14,6 @@ import numpy as np
 import pandas as pd
 from flask import Flask, request, jsonify, send_from_directory, make_response
 from flask_cors import CORS
-from utils import project_player, negotiation_range, compute_score_for_player, clean_json, years_to_project
-
 
 # ----------------- App & CORS -----------------
 app = Flask(__name__, static_folder="public", static_url_path="/public")
@@ -53,6 +51,8 @@ POSITION_WEIGHTS = {
 }
 
 # ----------------- Utilities -----------------
+# Removed: from utils import ...
+
 def years_to_project(age: int) -> int:
     if age <= 20: return 5
     if 21 <= age <= 25: return 4
@@ -103,23 +103,13 @@ def compute_score_for_player(row, position, user_weights=None):
     return round(score * 100,4)
 
 def project_player(player_row, years=3):
-    """
-    Returns a list of projected attributes for each year.
-    Every numeric attribute in FC26 dataset is projected.
-    """
     attrs = player_row.to_dict()
-    
-    # Identify numeric attributes
     numeric_attrs = {}
     for k, v in attrs.items():
-        try:
-            numeric_attrs[k] = float(v)
-        except:
-            continue
+        try: numeric_attrs[k] = float(v)
+        except: continue
 
     projections = []
-
-    # Define growth/decline rates heuristically based on age
     age = int(attrs.get('age') or 20)
     if age <= 20: growth_factor = 1.12; overall_delta = 1.8
     elif age <= 25: growth_factor = 1.08; overall_delta = 1.2
@@ -127,18 +117,15 @@ def project_player(player_row, years=3):
     elif age <= 35: growth_factor = 1.03; overall_delta = -0.5
     else: growth_factor = 1.01; overall_delta = -1.0
 
-    # Project each year
     current_attrs = numeric_attrs.copy()
     for year in range(1, years + 1):
         projected = {}
         for k, val in current_attrs.items():
-            # Slight increase/decrease for numeric stats
             if k.lower() in ['overall','potential']:
                 projected[k] = max(40, min(99, round(val + overall_delta)))
             elif 'value' in k.lower():
                 projected[k] = round(val * growth_factor)
             else:
-                # Other numeric attributes: small random +/- 2% per year (can be improved)
                 projected[k] = round(val * (1 + 0.02 * (1 if year % 2 == 0 else -1)))
         projected['year'] = year
         projections.append(projected)
@@ -146,13 +133,12 @@ def project_player(player_row, years=3):
 
     return projections
 
-
-
 def negotiation_range(current_value:int, projected_value:int):
-    if current_value is None or current_value<=0: return {"min_offer":0,"max_offer":0}
-    min_offer = int(round(current_value*0.7))
-    max_offer = int(round(max(projected_value,current_value)*1.05))
-    return {"min_offer":min_offer,"max_offer":max_offer}
+    if current_value is None or current_value <= 0: return {"min_offer":0,"max_offer":0}
+    min_offer = int(round(current_value * 0.7))
+    max_offer = int(round(max(projected_value, current_value) * 1.05))
+    return {"min_offer": min_offer, "max_offer": max_offer}
+
 
 # ----------------- Initialize Dataset -----------------
 def initialize_app():
