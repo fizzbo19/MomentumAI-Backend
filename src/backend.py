@@ -102,25 +102,54 @@ def compute_score_for_player(row, position, user_weights=None):
         score += norm * (w / total_w)
     return round(score * 100,4)
 
+# ----------------- Safe helpers -----------------
+def safe_int(val, default=0):
+    try:
+        if val is None or (isinstance(val, float) and (math.isnan(val) or math.isinf(val))):
+            return default
+        return int(val)
+    except:
+        return default
+
+def safe_float(val, default=0.0):
+    try:
+        if val is None or (isinstance(val, float) and (math.isnan(val) or math.isinf(val))):
+            return default
+        return float(val)
+    except:
+        return default
+
+# ----------------- Updated project_player -----------------
 def project_player(player_row, years=3):
+    """
+    Returns a list of projected attributes for each year.
+    Fully safe against NaN/None values in the dataset.
+    """
     attrs = player_row.to_dict()
+    
+    # Identify numeric attributes safely
     numeric_attrs = {}
     for k, v in attrs.items():
-        try: numeric_attrs[k] = float(v)
-        except: continue
+        val = safe_float(v)
+        numeric_attrs[k] = val
 
     projections = []
-    age = int(attrs.get('age') or 20)
+
+    # Define growth/decline rates heuristically based on age
+    age = safe_int(attrs.get('age'), 20)
     if age <= 20: growth_factor = 1.12; overall_delta = 1.8
     elif age <= 25: growth_factor = 1.08; overall_delta = 1.2
     elif age <= 30: growth_factor = 1.05; overall_delta = 0.5
     elif age <= 35: growth_factor = 1.03; overall_delta = -0.5
     else: growth_factor = 1.01; overall_delta = -1.0
 
+    # Project each year
     current_attrs = numeric_attrs.copy()
     for year in range(1, years + 1):
         projected = {}
         for k, val in current_attrs.items():
+            val = safe_float(val)
+            # Slight increase/decrease for numeric stats
             if k.lower() in ['overall','potential']:
                 projected[k] = max(40, min(99, round(val + overall_delta)))
             elif 'value' in k.lower():
@@ -133,8 +162,12 @@ def project_player(player_row, years=3):
 
     return projections
 
+# ----------------- Updated negotiation_range -----------------
 def negotiation_range(current_value:int, projected_value:int):
-    if current_value is None or current_value <= 0: return {"min_offer":0,"max_offer":0}
+    current_value = safe_int(current_value, 0)
+    projected_value = safe_int(projected_value, current_value)
+    if current_value <= 0:
+        return {"min_offer":0,"max_offer":0}
     min_offer = int(round(current_value * 0.7))
     max_offer = int(round(max(projected_value, current_value) * 1.05))
     return {"min_offer": min_offer, "max_offer": max_offer}
@@ -192,6 +225,18 @@ CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS, "supports_credentia
 # Assume `player_data` is your FC26 DataFrame loaded elsewhere
 # player_data = pd.read_csv("fc26_players.csv")
 
+# ----------------- Safe int helper -----------------
+
+
+def safe_int(val, default=0):
+    try:
+        if val is None or (isinstance(val, float) and math.isnan(val)):
+            return default
+        return int(val)
+    except:
+        return default
+
+# ----------------- Routes -----------------
 @app.route("/api/search_player", methods=["POST","OPTIONS"])
 def api_search_player():
     if request.method == "OPTIONS":
@@ -211,11 +256,12 @@ def api_search_player():
         results = df[mask].head(20)
         out = []
         for _, row in results.iterrows():
-            age = int(row.get('age') or 0)
+            age = safe_int(row.get('age'), 0)
             years = years_to_project(age)
             projections = project_player(row, years)
-            last_proj_val = projections[-1].get('value_eur', int(row.get('value_eur') or 0)) if projections else int(row.get('value_eur') or 0)
-            neg = negotiation_range(int(row.get('value_eur') or 0), last_proj_val)
+            current_val = safe_int(row.get('value_eur'), 0)
+            last_proj_val = safe_int(projections[-1].get('value_eur'), current_val) if projections else current_val
+            neg = negotiation_range(current_val, last_proj_val)
             score = compute_score_for_player(row, row.get('club_position') or 'CM')
 
             player_json = clean_json(row.to_dict())
@@ -276,11 +322,12 @@ def api_find_players():
 
         players_out = []
         for score, row in scored_sorted[:50]:
-            age = int(row.get('age') or 0)
+            age = safe_int(row.get('age'), 0)
             years = years_to_project(age)
             projections = project_player(row, years)
-            last_proj_val = projections[-1].get('value_eur', int(row.get('value_eur') or 0)) if projections else int(row.get('value_eur') or 0)
-            neg = negotiation_range(int(row.get('value_eur') or 0), last_proj_val)
+            current_val = safe_int(row.get('value_eur'), 0)
+            last_proj_val = safe_int(projections[-1].get('value_eur'), current_val) if projections else current_val
+            neg = negotiation_range(current_val, last_proj_val)
 
             player_json = clean_json(row.to_dict())
             player_json.update({
@@ -296,6 +343,7 @@ def api_find_players():
     except Exception as e:
         print("Error in /api/find_players:", e)
         return jsonify({"players": [], "message": f"Internal Server Error: {e}"}), 500
+
 
 
 
