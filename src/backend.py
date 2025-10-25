@@ -114,27 +114,36 @@ player_data = None
 
 def initialize_app():
     global player_data
+
     fp = os.path.join(DATA_FOLDER_PATH, DATA_FILENAME)
     if not os.path.exists(fp):
         raise FileNotFoundError(f"Dataset not found at {fp} (set DATA_FOLDER_PATH/DATA_FILENAME env vars)")
-    
+
     try:
-        player_data = pd.read_excel(fp)
+        # ✅ Read CSV instead of Excel
+        if fp.endswith('.csv'):
+            player_data = pd.read_csv(fp)
+        else:
+            player_data = pd.read_excel(fp)
     except Exception as e:
-        print(f"Error reading Excel file: {e}")
+        print(f"Error reading dataset: {e}")
         raise
-        
-    player_data.columns = [c if isinstance(c, str) else c for c in player_data.columns]
-    
-    NUMERIC_COLS = ['overall','potential','age','value_eur','pace','shooting','passing','dribbling','defending','physic','wage_eur']
-    
-    # Loop to forcefully convert columns and handle non-numeric values
+
+    # ✅ Clean column names just in case
+    player_data.columns = [str(c).strip() for c in player_data.columns]
+
+    NUMERIC_COLS = [
+        'overall', 'potential', 'age', 'value_eur', 'pace',
+        'shooting', 'passing', 'dribbling', 'defending', 'physic', 'wage_eur'
+    ]
+
+    # ✅ Ensure numeric columns are properly typed
     for col in NUMERIC_COLS:
         if col in player_data.columns:
-            # CRITICAL FIX: Ensure all numeric columns are strictly float, replacing anything else with 0
             player_data[col] = pd.to_numeric(player_data[col], errors='coerce').fillna(0)
-            
+
     print(f"✅ Dataset loaded. Total players: {len(player_data)}")
+
 
 # --- Helpers (Sanitization, Scoring, Projection) ---
 def sanitize_player_data(players_list):
