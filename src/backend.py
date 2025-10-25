@@ -166,27 +166,6 @@ def initialize_app():
     print(player_data.head(3)[[c for c in ['short_name','player_name','overall','club_name'] if c in player_data.columns]])
 
 # ----------------- Routes -----------------
-@app.before_request
-def handle_options_preflight():
-    if request.method=="OPTIONS" and request.path.startswith("/api/"):
-        resp=make_response("")
-        origin=request.headers.get("Origin","")
-        if origin in ALLOWED_ORIGINS:
-            resp.headers["Access-Control-Allow-Origin"]=origin
-            resp.headers["Access-Control-Allow-Credentials"]="true"
-            resp.headers["Access-Control-Allow-Headers"]="Content-Type, Authorization"
-            resp.headers["Access-Control-Allow-Methods"]="GET, POST, OPTIONS"
-        return resp
-
-@app.after_request
-def add_cors_headers(response):
-    origin=request.headers.get("Origin")
-    if origin and origin in ALLOWED_ORIGINS:
-        response.headers["Access-Control-Allow-Origin"]=origin
-        response.headers["Access-Control-Allow-Credentials"]="true"
-        response.headers["Access-Control-Allow-Headers"]="Content-Type, Authorization"
-        response.headers["Access-Control-Allow-Methods"]="GET, POST, OPTIONS"
-    return response
 
 @app.route("/api/debug_dataset", methods=["GET"])
 def debug_dataset():
@@ -199,6 +178,16 @@ def debug_dataset():
     })
 
 app = Flask(__name__)
+
+from flask_cors import CORS
+
+ALLOWED_ORIGINS = [
+    "https://momentumai-frontend.onrender.com",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000"
+]
+
+CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS, "supports_credentials": True}})
 
 # Assume `player_data` is your FC26 DataFrame loaded elsewhere
 # player_data = pd.read_csv("fc26_players.csv")
