@@ -75,12 +75,24 @@ def clean_json_value(v):
     if is_nan_like(v): return None
     return v
 
-def clean_json(data):
-    if isinstance(data, dict):
-        return {k: clean_json(data[k]) for k in data}
-    if isinstance(data, list):
-        return [clean_json(v) for v in data]
-    return clean_json_value(data)
+def clean_json(d):
+    """
+    Recursively clean a dict/list so all NaN, inf, and None are safe for JSON serialization.
+    """
+    if isinstance(d, dict):
+        clean = {}
+        for k, v in d.items():
+            clean[k] = clean_json(v)
+        return clean
+    elif isinstance(d, list):
+        return [clean_json(v) for v in d]
+    elif isinstance(d, (float, int)):
+        if isinstance(d, float) and (math.isnan(d) or math.isinf(d)):
+            return None
+        return d
+    else:
+        return d
+
 
 def compute_score_for_player(row, position, user_weights=None):
     if hasattr(row, "to_dict"): row_dict = row.to_dict()
