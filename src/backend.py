@@ -81,7 +81,7 @@ GOOGLE_SCRIPT_URL = os.environ.get(
 )
 DATA_FOLDER_PATH = os.environ.get("DATA_FOLDER_PATH", "data")
 DATA_FILENAME = os.environ.get(
-    "DATA_FILENAME", "Career Mode player datasets - FIFA 15-22.xlsx"
+    "DATA_FILENAME", "MomentumAIbackend/data/FC26_MomentumScout.csv"
 )
 
 # --- Default position weights (fallback) ---
