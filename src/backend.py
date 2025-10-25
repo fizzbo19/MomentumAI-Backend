@@ -1,26 +1,25 @@
+# backend.py
 """
-MomentumScout Backend – Final Production-Ready Version
-FIXES: 
-1. Persistent ambiguity error in Pandas filtering (initialization and runtime).
-2. Ensures all core filters (Value, Age, Overall) are safely mapped.
-3. Implements final CORS solution.
+MomentumScout Backend – Consolidated & FC26-ready
+- Supports CSV or Excel player datasets (FC26 example).
+- Normalizes key column names (e.g. long_name -> player_name).
+- Robust CORS + preflight handling for frontend origins.
+- Sanitizes NaN/Inf/numpy types before JSON responses.
 """
 import os
 import math
+import json
 import numpy as np
 import pandas as pd
-from flask import Flask, request, jsonify, send_from_directory
-import requests
+from flask import Flask, request, jsonify, send_from_directory, make_response
 from flask_cors import CORS
-import json
 
 app = Flask(__name__, static_folder="public", static_url_path="/public")
 
-# ✅ FRONTEND URLS
-DEFAULT_FRONTEND = "https://momentum-ai-io.netlify.app"  # live frontend
+# FRONTEND URLS - update FRONTEND_URL env var on Render if different
+DEFAULT_FRONTEND = "https://momentum-ai-io.netlify.app"
 FRONTEND_URL = os.environ.get("FRONTEND_URL", DEFAULT_FRONTEND)
 
-# --- Allowed origins
 ALLOWED_ORIGINS = [
     FRONTEND_URL,
     "https://momentumai-frontend.onrender.com",
@@ -28,63 +27,14 @@ ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000"
 ]
 
-# ✅ CORS
+# CORS for /api/*
 CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS, "supports_credentials": True}})
 
-# ✅ ADD THIS RIGHT BELOW
-@app.route('/api/submit_demo', methods=['POST'])
-def submit_demo():
-    data = request.get_json()
-    if not data:
-        return jsonify({"success": False, "message": "No data received"}), 400
-
-    full_name = data.get("fullName")
-    email = data.get("email")
-    organization = data.get("organization")
-
-    # Log or handle the request
-    print(f"📩 Demo request from {full_name} ({email}) - {organization}")
-
-    # Send success response to frontend
-    return jsonify({"success": True, "message": "Demo request received!"})
-
-# (Then below this you can have your player search, dashboard, etc. routes)
-
-
-# --- Global OPTIONS preflight handler
-@app.before_request
-def handle_options_preflight():
-    if request.method == "OPTIONS" and request.path.startswith("/api/"):
-        response = app.make_response("")
-        response.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "")
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-        return response, 200
-
-# --- After request to add CORS headers dynamically
-@app.after_request
-def add_cors_headers(response):
-    origin = request.headers.get("Origin")
-    if origin and origin in ALLOWED_ORIGINS:
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    return response
-
-
-# --- Environment Variables ---
-GOOGLE_SCRIPT_URL = os.environ.get(
-    "GOOGLE_SCRIPT_URL",
-    "https://script.google.com/macros/s/AKfycbzKry-uh7HtLAQD_NolGX82xWeY2K8xZG9UjgOC_mmdNI7DpclWhGlesff_Qwe_jSau/exec"
-)
+# Env / dataset defaults
 DATA_FOLDER_PATH = os.environ.get("DATA_FOLDER_PATH", "data")
-DATA_FILENAME = os.environ.get(
-    "DATA_FILENAME", "data/FC26_MomentumScout.csv"
-)
+DATA_FILENAME = os.environ.get("DATA_FILENAME", "data/FC26_MomentumScout.csv")
 
-# --- Default position weights (fallback) ---
+# Default weights (fallback)
 POSITION_WEIGHTS = {
     'GK': {'goalkeeping_diving': 20,'goalkeeping_handling': 20,'goalkeeping_kicking': 20,'goalkeeping_positioning': 20,'goalkeeping_reflexes': 20},
     'CB': {'defending':50,'physic':20,'pace':10,'passing':10,'dribbling':10},
@@ -99,9 +49,7 @@ POSITION_WEIGHTS = {
     'CF': {'shooting':30,'passing':25,'dribbling':25,'pace':20,'movement_acceleration':5}
 }
 
-POSITION_METRICS_FOR_SCORING = POSITION_WEIGHTS 
-
-# --- Projection rules by age (years to project) ---
+# projection rules
 def years_to_project(age: int) -> int:
     if age <= 20: return 5
     if 21 <= age <= 25: return 4
@@ -109,74 +57,96 @@ def years_to_project(age: int) -> int:
     if 31 <= age <= 35: return 2
     return 1
 
-# --- Load dataset ---
+# dataset holder
 player_data = None
 
 def initialize_app():
+    """Load CSV or Excel dataset and normalize common fields for FC26 compatibility."""
     global player_data
-
     fp = os.path.join(DATA_FOLDER_PATH, DATA_FILENAME)
     if not os.path.exists(fp):
         raise FileNotFoundError(f"Dataset not found at {fp} (set DATA_FOLDER_PATH/DATA_FILENAME env vars)")
 
     try:
-        # ✅ Read CSV instead of Excel
-        if fp.endswith('.csv'):
-            player_data = pd.read_csv(fp)
+        if fp.lower().endswith('.csv'):
+            # sometimes CSV contains weird encodings; utf-8-sig helps
+            player_data = pd.read_csv(fp, encoding='utf-8-sig')
         else:
             player_data = pd.read_excel(fp)
     except Exception as e:
-        print(f"Error reading dataset: {e}")
+        print("Error reading dataset:", e)
         raise
 
-    # ✅ Clean column names just in case
+    # Normalize column names (trim and lower-case where helpful)
     player_data.columns = [str(c).strip() for c in player_data.columns]
 
-    NUMERIC_COLS = [
-        'overall', 'potential', 'age', 'value_eur', 'pace',
-        'shooting', 'passing', 'dribbling', 'defending', 'physic', 'wage_eur'
-    ]
+    # Add aliases expected by older code
+    # FC26 has 'long_name' and 'short_name' — ensure 'player_name' exists
+    if 'player_name' not in player_data.columns and 'long_name' in player_data.columns:
+        player_data['player_name'] = player_data['long_name']
 
-    # ✅ Ensure numeric columns are properly typed
+    # Ensure numeric columns coerced
+    NUMERIC_COLS = [
+        'overall','potential','age','value_eur','pace','shooting',
+        'passing','dribbling','defending','physic','wage_eur'
+    ]
     for col in NUMERIC_COLS:
         if col in player_data.columns:
             player_data[col] = pd.to_numeric(player_data[col], errors='coerce').fillna(0)
 
     print(f"✅ Dataset loaded. Total players: {len(player_data)}")
+    # optional quick head for debug
+    print(player_data.head(3)[[c for c in ['short_name','player_name','overall','club_name'] if c in player_data.columns]])
 
+# ----------------- Helpers -----------------
+def is_nan_like(v):
+    try:
+        return (isinstance(v, float) and (math.isnan(v) or math.isinf(v))) or (pd.isna(v))
+    except Exception:
+        return False
 
-# --- Helpers (Sanitization, Scoring, Projection) ---
-def sanitize_player_data(players_list):
-    clean_list = []
-    for player in players_list:
-        clean_player = {}
-        for k,v in player.items():
-            is_nan_or_none = (
-                (isinstance(v, float) and (math.isnan(v) or math.isinf(v))) or
-                (pd.isna(v)) or 
-                (v is None)
-            )
-            
-            if is_nan_or_none:
-                clean_player[k] = None
-            elif isinstance(v, np.generic):
-                clean_player[k] = v.item() 
-            else:
-                clean_player[k] = v
-        clean_list.append(clean_player)
-    return clean_list
+def clean_json_value(v):
+    """Converts numpy types, nan/inf to JSON-friendly types."""
+    if isinstance(v, (np.integer,)):
+        return int(v)
+    if isinstance(v, (np.floating,)):
+        if math.isnan(float(v)) or math.isinf(float(v)):
+            return None
+        return float(v)
+    if isinstance(v, np.bool_):
+        return bool(v)
+    if is_nan_like(v):
+        return None
+    return v
+
+def clean_json(data):
+    """Recursively clean dict/list values for JSON serialization."""
+    if isinstance(data, dict):
+        return {k: clean_json(data[k]) for k in data}
+    if isinstance(data, list):
+        return [clean_json(v) for v in data]
+    return clean_json_value(data)
 
 def compute_score_for_player(row, position, user_weights=None):
+    """Score a player row (row can be pandas Series or dict-like)."""
+    # convert to dictionary for safe .get usage
+    if hasattr(row, "to_dict"):
+        row_dict = row.to_dict()
+    else:
+        row_dict = dict(row)
     base_weights = POSITION_WEIGHTS.get(position, POSITION_WEIGHTS.get('CM', {})).copy()
     if user_weights:
-        for k,v in user_weights.items():
+        for k, v in user_weights.items():
             if v is not None:
-                base_weights[k] = float(v)
+                try:
+                    base_weights[k] = float(v)
+                except Exception:
+                    pass
     total_w = sum(base_weights.values()) if base_weights else 1
     if total_w == 0: total_w = 1
     score = 0.0
     for attr, w in base_weights.items():
-        val = row.get(attr, 0)
+        val = row_dict.get(attr, 0)
         try:
             val_num = float(val) if val is not None else 0.0
         except:
@@ -185,11 +155,20 @@ def compute_score_for_player(row, position, user_weights=None):
         score += norm * (w / total_w)
     return round(score * 100, 4)
 
-def project_player(row, years:int):
-    ovr = int(row.get('overall') or 0)
-    pot = int(row.get('potential') or ovr)
-    age = int(row.get('age') or 0)
-    value = float(row.get('value_eur') or 0)
+def project_player(row_like, years:int):
+    """Return list of projections given a row-like (dict or Series) or simple values."""
+    if hasattr(row_like, "get") or hasattr(row_like, "to_dict"):
+        r = row_like.to_dict() if hasattr(row_like, "to_dict") else dict(row_like)
+        ovr = int(r.get('overall') or 0)
+        pot = int(r.get('potential') or ovr)
+        age = int(r.get('age') or 0)
+        value = float(r.get('value_eur') or 0)
+    else:
+        # assume row_like is tuple/list [overall, potential, age, value]
+        ovr = int(row_like[0] or 0)
+        pot = int(row_like[1] or ovr)
+        age = int(row_like[2] or 0)
+        value = float(row_like[3] or 0)
 
     if pot > ovr and years > 0:
         per_year_ovr = (pot - ovr) / years
@@ -222,33 +201,51 @@ def negotiation_range(current_value:int, projected_value:int):
     max_offer = int(round(max(projected_value, current_value) * 1.05))
     return {"min_offer": min_offer, "max_offer": max_offer}
 
-# attributes to consider for scoring by default (comprehensive list)
-POSITION_METRICS_FOR_SCORING = {
-    'GK': ['goalkeeping_diving','goalkeeping_handling','goalkeeping_kicking','goalkeeping_positioning','goalkeeping_reflexes'],
-    'CB': ['defending','physic','pace','passing','dribbling'],
-    'LB': ['pace','passing','defending','physic','dribbling'],
-    'RB': ['pace','passing','defending','physic','dribbling'],
-    'CDM': ['defending','passing','dribbling','physic','pace'],
-    'CM': ['passing','dribbling','defending','pace','physic'],
-    'CAM': ['passing','dribbling','shooting','pace','physic'],
-    'LW': ['pace','dribbling','shooting','passing','physic'],
-    'RW': ['pace','dribbling','shooting','passing','physic'],
-    'ST': ['shooting','pace','dribbling','physic','movement_acceleration'],
-    'CF': ['shooting','passing','dribbling','pace','physic']
-}
+# ----------------- Routes -----------------
 
+@app.route('/api/submit_demo', methods=['POST'])
+def submit_demo():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"success": False, "message": "No data received"}), 400
+    full_name = data.get("fullName")
+    email = data.get("email")
+    organization = data.get("organization")
+    print(f"📩 Demo request from {full_name} ({email}) - {organization}")
+    return jsonify({"success": True, "message": "Demo request received!"})
 
+# OPTIONS preflight handler (ensures 200 for preflight)
+@app.before_request
+def handle_options_preflight():
+    if request.method == "OPTIONS" and request.path.startswith("/api/"):
+        resp = make_response("")
+        origin = request.headers.get("Origin", "")
+        if origin in ALLOWED_ORIGINS:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        return resp
 
-def clean_json(data):
-    """Recursively replace NaN/inf values with None so JSON stays valid."""
-    if isinstance(data, dict):
-        return {k: clean_json(v) for k, v in data.items()}
-    elif isinstance(data, list):
-        return [clean_json(v) for v in data]
-    elif isinstance(data, float):
-        if math.isnan(data) or math.isinf(data):
-            return None
-    return data
+@app.after_request
+def add_cors_headers(response):
+    origin = request.headers.get("Origin")
+    if origin and origin in ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
+
+@app.route("/api/debug_dataset", methods=["GET"])
+def debug_dataset():
+    """Small debugging endpoint to confirm dataset is loaded and fields exist."""
+    if player_data is None:
+        return jsonify({"loaded": False, "message": "No dataset loaded"}), 500
+    cols = list(player_data.columns)
+    sample = player_data.head(5).to_dict(orient='records')
+    sample_clean = clean_json(sample)
+    return jsonify({"loaded": True, "rows": len(player_data), "columns": cols, "sample": sample_clean})
 
 @app.route("/api/search_player", methods=["POST", "OPTIONS"])
 def api_search_player():
@@ -257,24 +254,23 @@ def api_search_player():
     try:
         payload = request.get_json(silent=True) or {}
         query = (payload.get("player_name") or payload.get("name") or "").strip()
-        
         if not query:
             return jsonify([])
-
         q = str(query).lower()
         df = player_data
         name_cols = [c for c in ['short_name', 'long_name', 'player_name'] if c in df.columns]
-        
-        mask = False
+        # build mask
+        mask = pd.Series([False]*len(df))
         if name_cols:
             for c in name_cols:
                 mask = mask | df[c].astype(str).str.lower().str.contains(q, na=False)
         else:
             mask = df.astype(str).apply(lambda r: r.str.lower().str.contains(q, na=False).any(), axis=1)
-            
+
         results = df[mask].head(20)
         out = []
         for _, row in results.iterrows():
+            # row is a Series
             age = int(row.get('age') or 0)
             years = years_to_project(age)
             projections = project_player(row, years)
@@ -282,7 +278,22 @@ def api_search_player():
             neg = negotiation_range(int(row.get('value_eur') or 0), last_proj_value)
             weekly_wage = row.get('wage_eur', 0)
             yearly_wage_gbp = weekly_wage * 52 if weekly_wage else 0
-            
+
+            full_attrs = {
+                "Overall": int(row.get('overall') or 0),
+                "Potential": int(row.get('potential') or 0),
+                "Age": age,
+                "Pace": int(row.get('pace') or 0),
+                "Shooting": int(row.get('shooting') or 0),
+                "Passing": int(row.get('passing') or 0),
+                "Dribbling": int(row.get('dribbling') or 0),
+                "Defending": int(row.get('defending') or 0),
+                "Physicality": int(row.get('physic') or 0),
+                "Club": row.get('club_name') or '',
+                "League": row.get('league_name') or '',
+                "Wage (YEARLY GBP)": yearly_wage_gbp
+            }
+
             out.append({
                 "short_name": row.get('short_name') or row.get('player_name') or "N/A",
                 "club_position": row.get('club_position') or "",
@@ -293,41 +304,22 @@ def api_search_player():
                 "min_value_eur": neg['min_offer'],
                 "max_value_eur": neg['max_offer'],
                 "projections": projections,
-                "full_attributes": {
-                    "Overall": int(row.get('overall') or 0),
-                    "Potential": int(row.get('potential') or 0),
-                    "Age": age,
-                    "Pace": int(row.get('pace') or 0),
-                    "Shooting": int(row.get('shooting') or 0),
-                    "Passing": int(row.get('passing') or 0),
-                    "Dribbling": int(row.get('dribbling') or 0),
-                    "Defending": int(row.get('defending') or 0),
-                    "Physicality": int(row.get('physic') or 0),
-                    "Club": row.get('club_name') or '',
-                    "League": row.get('league_name') or '',
-                    "Wage (YEARLY GBP)": yearly_wage_gbp
-                },
+                "full_attributes": full_attrs,
                 "raw_attributes": clean_json(row.to_dict())
-
             })
-        
-        # ✅ Clean invalid values like NaN/inf
-        cleaned = clean_json(out)
-        return jsonify(cleaned)
 
+        return jsonify(clean_json(out))
     except Exception as e:
         print("Error in /api/search_player:", e)
         return jsonify({"message": f"Internal Server Error: {e}"}), 500
 
-
-
 @app.route("/api/find_players", methods=["POST","OPTIONS"])
 def api_find_players():
     if request.method == "OPTIONS":
-        return "", 200  # small correction here (previously `0`)
+        return "", 200
     try:
         payload = request.get_json(silent=True) or {}
-        position = (payload.get("club_position") or "CM").upper()
+        position = (payload.get("club_position") or payload.get("position") or "CM").upper()
         filters = payload.get("filters") or {}
         user_weights = payload.get("weights") or {}
 
@@ -339,7 +331,6 @@ def api_find_players():
                 if isinstance(rng, (list, tuple)) and len(rng) >= 2:
                     lo = float(rng[0])
                     hi = float(rng[1])
-
                     target_col = key.lower()
                     if 'value' in target_col:
                         target_col = 'value_eur'
@@ -347,14 +338,13 @@ def api_find_players():
                         target_col = 'overall'
                     elif 'age' in target_col:
                         target_col = 'age'
-
                     if target_col in df.columns:
-                        df = df[(df[target_col].astype(float) >= lo) & (df[target_col].astype(float) <= hi)]
+                        df = df[(pd.to_numeric(df[target_col], errors='coerce').fillna(0).astype(float) >= lo) & (pd.to_numeric(df[target_col], errors='coerce').fillna(0).astype(float) <= hi)]
                     else:
                         print(f"Skipping filter for '{key}': column '{target_col}' not found.")
             except Exception as e:
                 print(f"CRASH POINT: Filter error on key '{key}' with range {rng}. Error: {e}")
-                return jsonify({"players": []}), 200 
+                return jsonify({"players": []}), 200
 
         # Score players
         scored = []
@@ -374,9 +364,23 @@ def api_find_players():
             projections = project_player(row, years) or []
             last_proj_value = projections[-1]['projected_value_eur'] if projections else int(row.get('value_eur') or 0)
             neg = negotiation_range(int(row.get('value_eur') or 0), last_proj_value)
-
             weekly_wage = row.get('wage_eur', 0)
             yearly_wage_gbp = weekly_wage * 52 if weekly_wage else 0
+
+            full_attrs = {
+                'Overall': int(row.get('overall') or 0),
+                'Potential': int(row.get('potential') or 0),
+                'Age': age,
+                'Pace': int(row.get('pace') or 0),
+                'Shooting': int(row.get('shooting') or 0),
+                'Passing': int(row.get('passing') or 0),
+                'Dribbling': int(row.get('dribbling') or 0),
+                'Defending': int(row.get('defending') or 0),
+                'Physicality': int(row.get('physic') or 0),
+                'Club': row.get('club_name') or '',
+                'League': row.get('league_name') or '',
+                'Wage (YEARLY GBP)': yearly_wage_gbp
+            }
 
             players_out.append({
                 "short_name": row.get('short_name') or row.get('player_name') or "N/A",
@@ -390,29 +394,11 @@ def api_find_players():
                 "momentum_score": score,
                 "projections": projections,
                 "negotiation": neg,
-                "full_attributes": {
-                    'Overall': int(row.get('overall') or 0),
-                    'Potential': int(row.get('potential') or 0),
-                    'Age': age,
-                    'Pace': int(row.get('pace') or 0),
-                    'Shooting': int(row.get('shooting') or 0),
-                    'Passing': int(row.get('passing') or 0),
-                    'Dribbling': int(row.get('dribbling') or 0),
-                    'Defending': int(row.get('defending') or 0),
-                    'Physicality': int(row.get('physic') or 0),
-                    'Club': row.get('club_name') or '',
-                    'League': row.get('league_name') or '',
-                    'Wage (YEARLY GBP)': yearly_wage_gbp
-                },
+                "full_attributes": full_attrs,
                 "raw_attributes": clean_json(row.to_dict())
-
             })
 
-        # ✅ Clean invalid JSON values (NaN, inf, etc)
-        cleaned = clean_json(players_out[:5])
-
-        return jsonify({"players": cleaned})
-
+        return jsonify({"players": clean_json(players_out[:5])})
     except Exception as e:
         print("Error in /api/find_players:", e)
         return jsonify({"players": [], "message": f"Internal Server Error: {e}"}), 500
@@ -421,7 +407,7 @@ def api_find_players():
 def serve_assets(filename):
     return send_from_directory(os.path.join(app.root_path, "public/assets"), filename)
 
-# --- Main Execution ---
+# --- Main ---
 if __name__ == "__main__":
     print("🚀 Initializing backend...")
     initialize_app()
