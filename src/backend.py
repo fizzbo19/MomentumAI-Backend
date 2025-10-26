@@ -147,6 +147,20 @@ def initialize_app():
     except Exception as e:
         print("❌ Error loading dataset:", e)
         raise
+        # 🧠 Add Sofifa player image URLs (for face display)
+    if "sofifa_id" in player_data.columns:
+        player_data["player_face_url"] = player_data["sofifa_id"].apply(
+            lambda x: f"https://cdn.sofifa.net/players/{int(x)//1000:03d}/{int(x)%1000:03d}/24.webp"
+            if pd.notna(x) else None
+        )
+    else:
+        # If FC26 data doesn’t have sofifa_id, try fallback with player_url
+        if "player_url" in player_data.columns:
+            player_data["player_face_url"] = player_data["player_url"].apply(
+                lambda url: f"https://cdn.sofifa.net{url.split('/')[-2]}/{url.split('/')[-1]}/24.webp"
+                if isinstance(url, str) and "sofifa.com" in url else None
+            )
+
 
     player_data.columns = [c.strip() for c in player_data.columns]
     if 'player_name' not in player_data.columns and 'long_name' in player_data.columns:
@@ -171,6 +185,7 @@ def api_search_player():
             df["short_name"].astype(str).str.lower().str.contains(query, na=False)
             | df["long_name"].astype(str).str.lower().str.contains(query, na=False)
             | df["player_name"].astype(str).str.lower().str.contains(query, na=False)
+            
         )
         results = df[mask].head(15)
 
@@ -184,10 +199,25 @@ def api_search_player():
             score = compute_score_for_player(row, row.get("club_position") or "CM")
 
             player_json = clean_json(row.to_dict())
+
+            # ✅ Add all "attribute" columns dynamically
+            attributes = {
+                k: safe_int(v, 0)
+                for k, v in row.items()
+                if k.lower() in [
+                    "acceleration", "sprint_speed", "agility", "balance",
+                    "ball_control", "dribbling", "finishing", "short_passing",
+                    "long_passing", "shot_power", "stamina", "strength",
+                    "reactions", "vision", "composure", "interceptions",
+                    "standing_tackle", "sliding_tackle"
+                ]
+            }
+
             player_json.update({
                 "momentum_score": score,
                 "negotiation": neg,
-                "projections": projections
+                "projections": projections,
+                "full_attributes": attributes,  # 👈 Add this line
             })
             out.append(player_json)
 
@@ -195,6 +225,7 @@ def api_search_player():
     except Exception as e:
         print("❌ Error in /api/search_player:", e)
         return jsonify({"message": f"Internal Server Error: {e}"}), 500
+
 
 
 @app.route("/api/find_players", methods=["POST", "OPTIONS"])
@@ -228,7 +259,9 @@ def api_find_players():
             player_json.update({
                 "momentum_score": score,
                 "negotiation": neg,
-                "projections": projections
+                "projections": projections,
+                "full_attributes": attributes,
+                
             })
             players.append(player_json)
 
