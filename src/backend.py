@@ -173,6 +173,9 @@ def initialize_app():
 # -------------------------------
 # /api/search_player
 # -------------------------------
+# -------------------------------
+# /api/search_player
+# -------------------------------
 @app.route("/api/search_player", methods=["POST", "OPTIONS"])
 def api_search_player():
     if request.method == "OPTIONS":
@@ -185,16 +188,16 @@ def api_search_player():
 
         df = player_data.copy()
 
-        # ✅ Safe player_face_url generation
+        # ✅ Player face image
         df["player_face_url"] = df.get("sofifa_id", pd.Series([None]*len(df))).apply(
-            lambda x: f"https://cdn.sofifa.net/players/{int(x)//1000:03d}/{int(x)%1000:03d}/24.webp" if x else "https://cdn.sofifa.net/players/notfound.webp"
+            lambda x: f"https://cdn.sofifa.net/players/{int(x)//1000:03d}/{int(x)%1000:03d}/24.webp"
+            if pd.notna(x) else "https://cdn.sofifa.net/players/notfound.webp"
         )
 
-        # Apply search filter
+        # ✅ Match player name
         mask = (
             df["short_name"].astype(str).str.lower().str.contains(query, na=False)
             | df["long_name"].astype(str).str.lower().str.contains(query, na=False)
-            | df["player_name"].astype(str).str.lower().str.contains(query, na=False)
         )
         results = df[mask].head(15)
 
@@ -209,17 +212,32 @@ def api_search_player():
 
             player_json = clean_json(row.to_dict())
 
-            # ✅ Add all "attribute" columns dynamically
+            # ✅ FC26 Attribute Alignment
+            attribute_map = {
+                "movement_acceleration": "Acceleration",
+                "movement_sprint_speed": "Sprint Speed",
+                "movement_agility": "Agility",
+                "movement_reactions": "Reactions",
+                "movement_balance": "Balance",
+                "skill_ball_control": "Ball Control",
+                "skill_dribbling": "Dribbling",
+                "attacking_finishing": "Finishing",
+                "attacking_short_passing": "Short Passing",
+                "skill_long_passing": "Long Passing",
+                "power_shot_power": "Shot Power",
+                "power_stamina": "Stamina",
+                "power_strength": "Strength",
+                "mentality_vision": "Vision",
+                "mentality_composure": "Composure",
+                "mentality_interceptions": "Interceptions",
+                "defending_standing_tackle": "Standing Tackle",
+                "defending_sliding_tackle": "Sliding Tackle",
+            }
+
             attributes = {
-                k: safe_int(v, 0)
-                for k, v in row.items()
-                if k.lower() in [
-                    "acceleration", "sprint_speed", "agility", "balance",
-                    "ball_control", "dribbling", "finishing", "short_passing",
-                    "long_passing", "shot_power", "stamina", "strength",
-                    "reactions", "vision", "composure", "interceptions",
-                    "standing_tackle", "sliding_tackle"
-                ]
+                friendly_name: safe_int(row.get(col), 0)
+                for col, friendly_name in attribute_map.items()
+                if col in row and pd.notna(row[col])
             }
 
             player_json.update({
@@ -250,19 +268,41 @@ def api_find_players():
         filters = payload.get("filters") or {}
         df = player_data.copy()
 
-        # ✅ Safe player_face_url generation
+        # ✅ Player face image
         df["player_face_url"] = df.get("sofifa_id", pd.Series([None]*len(df))).apply(
-            lambda x: f"https://cdn.sofifa.net/players/{int(x)//1000:03d}/{int(x)%1000:03d}/24.webp" if x else "https://cdn.sofifa.net/players/notfound.webp"
+            lambda x: f"https://cdn.sofifa.net/players/{int(x)//1000:03d}/{int(x)%1000:03d}/24.webp"
+            if pd.notna(x) else "https://cdn.sofifa.net/players/notfound.webp"
         )
 
-        # Apply numeric filters
+        # ✅ Apply numeric filters
         for key, rng in filters.items():
             if isinstance(rng, (list, tuple)) and len(rng) >= 2:
                 lo, hi = safe_float(rng[0]), safe_float(rng[1])
                 if key in df.columns:
                     df = df[(df[key] >= lo) & (df[key] <= hi)]
 
-        # Score players
+        # ✅ FC26 Attribute Mapping
+        attribute_map = {
+            "movement_acceleration": "Acceleration",
+            "movement_sprint_speed": "Sprint Speed",
+            "movement_agility": "Agility",
+            "movement_reactions": "Reactions",
+            "movement_balance": "Balance",
+            "skill_ball_control": "Ball Control",
+            "skill_dribbling": "Dribbling",
+            "attacking_finishing": "Finishing",
+            "attacking_short_passing": "Short Passing",
+            "skill_long_passing": "Long Passing",
+            "power_shot_power": "Shot Power",
+            "power_stamina": "Stamina",
+            "power_strength": "Strength",
+            "mentality_vision": "Vision",
+            "mentality_composure": "Composure",
+            "mentality_interceptions": "Interceptions",
+            "defending_standing_tackle": "Standing Tackle",
+            "defending_sliding_tackle": "Sliding Tackle",
+        }
+
         players = []
         for _, row in df.iterrows():
             score = compute_score_for_player(row, position)
@@ -274,17 +314,10 @@ def api_find_players():
 
             player_json = clean_json(row.to_dict())
 
-            # ✅ Full attributes dynamically
             attributes = {
-                k: safe_int(v, 0)
-                for k, v in row.items()
-                if k.lower() in [
-                    "acceleration", "sprint_speed", "agility", "balance",
-                    "ball_control", "dribbling", "finishing", "short_passing",
-                    "long_passing", "shot_power", "stamina", "strength",
-                    "reactions", "vision", "composure", "interceptions",
-                    "standing_tackle", "sliding_tackle"
-                ]
+                friendly_name: safe_int(row.get(col), 0)
+                for col, friendly_name in attribute_map.items()
+                if col in row and pd.notna(row[col])
             }
 
             player_json.update({
