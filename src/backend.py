@@ -178,14 +178,22 @@ def api_search_player():
         payload = request.get_json(silent=True) or {}
         query = (payload.get("player_name") or payload.get("name") or "").strip().lower()
         if not query:
-            return jsonify([])
+            return jsonify({"players": []})
 
+        # ✅ Make sure player_face_url exists
+        global player_data
         df = player_data.copy()
+        if "player_face_url" not in df.columns or df["player_face_url"].isnull().all():
+            df["player_face_url"] = df["sofifa_id"].apply(
+                lambda x: f"https://cdn.sofifa.net/players/{int(x)//1000:03d}/{int(x)%1000:03d}/24.webp"
+                if pd.notna(x) else ""
+            )
+
+        # ✅ Search by multiple name fields
         mask = (
             df["short_name"].astype(str).str.lower().str.contains(query, na=False)
             | df["long_name"].astype(str).str.lower().str.contains(query, na=False)
             | df["player_name"].astype(str).str.lower().str.contains(query, na=False)
-            
         )
         results = df[mask].head(15)
 
@@ -200,31 +208,44 @@ def api_search_player():
 
             player_json = clean_json(row.to_dict())
 
-            # ✅ Add all "attribute" columns dynamically
+            # ✅ Add all key FIFA attributes with new FC 26 naming
             attributes = {
-                k: safe_int(v, 0)
-                for k, v in row.items()
-                if k.lower() in [
-                    "acceleration", "sprint_speed", "agility", "balance",
-                    "ball_control", "dribbling", "finishing", "short_passing",
-                    "long_passing", "shot_power", "stamina", "strength",
-                    "reactions", "vision", "composure", "interceptions",
-                    "standing_tackle", "sliding_tackle"
-                ]
+                "Acceleration": safe_int(row.get("movement_acceleration"), 0),
+                "Sprint Speed": safe_int(row.get("movement_sprint_speed"), 0),
+                "Agility": safe_int(row.get("movement_agility"), 0),
+                "Balance": safe_int(row.get("movement_balance"), 0),
+                "Dribbling": safe_int(row.get("skill_dribbling"), 0),
+                "Ball Control": safe_int(row.get("skill_ball_control"), 0),
+                "Finishing": safe_int(row.get("attacking_finishing"), 0),
+                "Short Passing": safe_int(row.get("attacking_short_passing"), 0),
+                "Long Passing": safe_int(row.get("skill_long_passing"), 0),
+                "Shot Power": safe_int(row.get("power_shot_power"), 0),
+                "Stamina": safe_int(row.get("power_stamina"), 0),
+                "Strength": safe_int(row.get("power_strength"), 0),
+                "Reactions": safe_int(row.get("movement_reactions"), 0),
+                "Vision": safe_int(row.get("mentality_vision"), 0),
+                "Composure": safe_int(row.get("mentality_composure"), 0),
+                "Interceptions": safe_int(row.get("mentality_interceptions"), 0),
+                "Standing Tackle": safe_int(row.get("defending_standing_tackle"), 0),
+                "Sliding Tackle": safe_int(row.get("defending_sliding_tackle"), 0),
             }
 
             player_json.update({
                 "momentum_score": score,
                 "negotiation": neg,
                 "projections": projections,
-                "full_attributes": attributes,  # 👈 Add this line
+                "full_attributes": attributes,
+                "player_face_url": row.get("player_face_url", ""),
             })
             out.append(player_json)
 
-        return jsonify(out)
+        # ✅ Return consistent JSON for frontend
+        return jsonify({"players": out})
+
     except Exception as e:
         print("❌ Error in /api/search_player:", e)
         return jsonify({"message": f"Internal Server Error: {e}"}), 500
+
 
 
 
@@ -238,14 +259,21 @@ def api_find_players():
         filters = payload.get("filters") or {}
         df = player_data.copy()
 
-        # Apply filters
+        # ✅ Ensure player_face_url exists
+        if "player_face_url" not in df.columns or df["player_face_url"].isnull().all():
+            df["player_face_url"] = df["sofifa_id"].apply(
+                lambda x: f"https://cdn.sofifa.net/players/{int(x)//1000:03d}/{int(x)%1000:03d}/24.webp"
+                if pd.notna(x) else ""
+            )
+
+        # Apply numeric filters
         for key, rng in filters.items():
             if isinstance(rng, (list, tuple)) and len(rng) >= 2:
                 lo, hi = safe_float(rng[0]), safe_float(rng[1])
                 if key in df.columns:
                     df = df[(df[key] >= lo) & (df[key] <= hi)]
 
-        # Score players
+        # Build players list with projections, negotiation, attributes
         players = []
         for _, row in df.iterrows():
             score = compute_score_for_player(row, position)
@@ -255,21 +283,46 @@ def api_find_players():
             last_proj_val = projections[-1]["projected_value_eur"] if projections else current_val
             neg = negotiation_range(current_val, last_proj_val)
 
+            # ✅ Build full attributes dynamically
+            attributes = {
+                "Acceleration": safe_int(row.get("movement_acceleration"), 0),
+                "Sprint Speed": safe_int(row.get("movement_sprint_speed"), 0),
+                "Agility": safe_int(row.get("movement_agility"), 0),
+                "Balance": safe_int(row.get("movement_balance"), 0),
+                "Dribbling": safe_int(row.get("skill_dribbling"), 0),
+                "Ball Control": safe_int(row.get("skill_ball_control"), 0),
+                "Finishing": safe_int(row.get("attacking_finishing"), 0),
+                "Short Passing": safe_int(row.get("attacking_short_passing"), 0),
+                "Long Passing": safe_int(row.get("skill_long_passing"), 0),
+                "Shot Power": safe_int(row.get("power_shot_power"), 0),
+                "Stamina": safe_int(row.get("power_stamina"), 0),
+                "Strength": safe_int(row.get("power_strength"), 0),
+                "Reactions": safe_int(row.get("movement_reactions"), 0),
+                "Vision": safe_int(row.get("mentality_vision"), 0),
+                "Composure": safe_int(row.get("mentality_composure"), 0),
+                "Interceptions": safe_int(row.get("mentality_interceptions"), 0),
+                "Standing Tackle": safe_int(row.get("defending_standing_tackle"), 0),
+                "Sliding Tackle": safe_int(row.get("defending_sliding_tackle"), 0),
+            }
+
             player_json = clean_json(row.to_dict())
             player_json.update({
                 "momentum_score": score,
                 "negotiation": neg,
                 "projections": projections,
                 "full_attributes": attributes,
-                
+                "player_face_url": row.get("player_face_url", ""),
             })
             players.append(player_json)
 
+        # Sort by momentum score and return top 10
         sorted_players = sorted(players, key=lambda x: x["momentum_score"], reverse=True)
         return jsonify({"players": sorted_players[:10]})
+
     except Exception as e:
         print("❌ Error in /api/find_players:", e)
         return jsonify({"players": [], "message": f"Internal Server Error: {e}"}), 500
+
 
 
 # ------------------ Startup ------------------
