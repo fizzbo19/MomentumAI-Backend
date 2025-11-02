@@ -359,7 +359,7 @@ def api_submit_demo():
 
         # ✅ Optional: Forward to Google Sheets via Apps Script Web App
         # (Replace with your actual script URL)
-        GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzKry-uh7HtLAQD_NolGX82xWeY2K8xZG9UjgOC_mmdNI7DpclWhGlesff_Qwe_jSau /exec"
+        GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzKry-uh7HtLAQD_NolGX82xWeY2K8xZG9UjgOC_mmdNI7DpclWhGlesff_Qwe_jSau/exec"
 
         try:
             import requests
