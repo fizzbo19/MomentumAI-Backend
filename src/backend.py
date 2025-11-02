@@ -336,6 +336,48 @@ def api_find_players():
         return jsonify({"players": [], "message": f"Internal Server Error: {e}"}), 500
 
 
+# -------------------------------
+# /api/submit_demo
+# -------------------------------
+@app.route("/api/submit_demo", methods=["POST", "OPTIONS"])
+def api_submit_demo():
+    if request.method == "OPTIONS":
+        return "", 200
+
+    try:
+        data = request.get_json(force=True)
+        name = data.get("fullName", "").strip()
+        email = data.get("email", "").strip()
+        organization = data.get("organization", "").strip()
+        demo_access = data.get("demoAccess", False)
+
+        if not name or not email:
+            return jsonify({"success": False, "message": "Missing name or email"}), 400
+
+        # ✅ Debug print (optional for Render logs)
+        print(f"📥 Demo Request: {name} | {email} | {organization} | Access: {demo_access}")
+
+        # ✅ Optional: Forward to Google Sheets via Apps Script Web App
+        # (Replace with your actual script URL)
+        GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzKry-uh7HtLAQD_NolGX82xWeY2K8xZG9UjgOC_mmdNI7DpclWhGlesff_Qwe_jSau /exec"
+
+        try:
+            import requests
+            payload = {
+                "fullName": name,
+                "email": email,
+                "organization": organization,
+                "demoAccess": demo_access
+            }
+            requests.post(GOOGLE_SCRIPT_URL, json=payload, timeout=5)
+        except Exception as e:
+            print(f"⚠️ Could not send to Google Sheets: {e}")
+
+        return jsonify({"success": True, "message": "Demo request submitted successfully"})
+
+    except Exception as e:
+        print("❌ Error in /api/submit_demo:", e)
+        return jsonify({"success": False, "message": f"Internal Server Error: {e}"}), 500
 
 # ------------------ Startup ------------------
 if __name__ == "__main__":
